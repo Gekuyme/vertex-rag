@@ -1,0 +1,3 @@
+ALTER TABLE organizations
+ADD COLUMN kb_version BIGINT NOT NULL DEFAULT 0;
+
