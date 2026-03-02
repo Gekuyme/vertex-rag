@@ -10,12 +10,34 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/auth"
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/config"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/httpserver"
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/store"
 )
 
 func main() {
-	port := envOrDefault("API_PORT", "8080")
-	server := httpserver.New(":" + port)
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
+
+	dbStore, err := store.New(context.Background(), cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("connect db: %v", err)
+	}
+	defer dbStore.Close()
+
+	if err := dbStore.Ping(context.Background()); err != nil {
+		log.Fatalf("ping db: %v", err)
+	}
+
+	tokenManager, err := auth.NewManager(cfg.JWTSecret, cfg.AccessTTL, cfg.RefreshTTL)
+	if err != nil {
+		log.Fatalf("init auth manager: %v", err)
+	}
+
+	server := httpserver.New(cfg.APIAddr, dbStore, tokenManager, cfg.CORSOrigin)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -40,12 +62,6 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("api graceful shutdown failed: %v", err)
 	}
-}
 
-func envOrDefault(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-
-	return fallback
+	log.Println("api server shut down")
 }

@@ -1,4 +1,4 @@
-FROM golang:1.22-alpine AS build
+FROM golang:1.24-alpine AS build
 WORKDIR /src
 
 COPY go.mod ./
@@ -10,4 +10,3 @@ FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/worker /worker
 EXPOSE 8082
 ENTRYPOINT ["/worker"]
-

@@ -1,4 +1,3 @@
 module github.com/Gekuyme/vertex-rag/apps/worker
 
-go 1.22.0
-
+go 1.24.0
