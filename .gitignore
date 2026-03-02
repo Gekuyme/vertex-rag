@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.env.local
+.idea/
+.vscode/
+node_modules/
+dist/
+build/
+coverage/
+tmp/
+*.log
+apps/api/bin/
+apps/worker/bin/
+
