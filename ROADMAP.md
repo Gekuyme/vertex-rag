@@ -23,13 +23,13 @@
 - [x] Добавить базовые health endpoints: `GET /healthz` (api/worker).
 
 ## Milestone 1 — Auth + Org + RBAC (ядро безопасности)
-- [ ] Схема БД: `organizations`, `users`, `roles` (везде `org_id` где нужно).
-- [ ] Seed default ролей: `Owner`, `Admin`, `Member`, `Viewer`.
-- [ ] Auth (MVP): email+password (Argon2id), JWT access + refresh (httpOnly cookie).
-- [ ] Middleware: извлечение `org_id` + роль пользователя для каждого запроса.
-- [ ] Permissions (минимум): `can_upload_docs`, `can_manage_users`, `can_manage_roles`, `can_manage_documents`, `can_toggle_web_search`.
+- [x] Схема БД: `organizations`, `users`, `roles` (везде `org_id` где нужно).
+- [x] Seed default ролей: `Owner`, `Admin`, `Member`, `Viewer`.
+- [x] Auth (MVP): email+password (Argon2id), JWT access + refresh (httpOnly cookie).
+- [x] Middleware: извлечение `org_id` + роль пользователя для каждого запроса.
+- [x] Permissions (минимум): `can_upload_docs`, `can_manage_users`, `can_manage_roles`, `can_manage_documents`, `can_toggle_web_search`.
 - [ ] Owner/Admin UI: управление пользователями (назначение ролей).
-- [ ] **Критерий готовности:** пользователь без прав не может дергать admin endpoints и не видит чужой `org_id`.
+- [x] **Критерий готовности:** пользователь без прав не может дергать admin endpoints и не видит чужой `org_id`.
 
 ## Milestone 2 — Knowledge Base: документы + ACL по ролям
 - [ ] Схема БД: `documents`, `document_chunks` (embedding + metadata + `allowed_role_ids int[]`).
