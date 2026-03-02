@@ -3,24 +3,24 @@
 Цель: MVP RAG-системы для бизнеса с современным AI chat UI, загрузкой документов в knowledge base, RAG-ответами с контролем доступа по ролям, и надежным переключателем `strict / unstrict`.
 
 ## Принятые решения для MVP (зафиксировано)
-- [ ] Подтвердить, что MVP = **SaaS-ready + self-host** (одна кодовая база, мульти‑тенант) и self-host поставляется как **Docker images** без исходников.
-- [ ] Стек: **Next.js (frontend) + Go (backend/worker)**.
-- [ ] Vector store: **Postgres + pgvector**.
-- [ ] Очередь и кэш: **Redis**.
-- [ ] Storage: **S3 (MinIO для dev/self-host)**.
-- [ ] LLM/Embeddings: **сменные провайдеры** (OpenAI API и локальный **Ollama**).
-- [ ] Unstrict web-search: **опционально**, по умолчанию выключено, через **Search API**.
-- [ ] Структура: **только чаты** (без проектов в MVP).
-- [ ] ACL: **по ролям** (без per-user исключений).
+- [x] Подтвердить, что MVP = **SaaS-ready + self-host** (одна кодовая база, мульти‑тенант) и self-host поставляется как **Docker images** без исходников.
+- [x] Стек: **Next.js (frontend) + Go (backend/worker)**.
+- [x] Vector store: **Postgres + pgvector**.
+- [x] Очередь и кэш: **Redis**.
+- [x] Storage: **S3 (MinIO для dev/self-host)**.
+- [x] LLM/Embeddings: **сменные провайдеры** (OpenAI API и локальный **Ollama**).
+- [x] Unstrict web-search: **опционально**, по умолчанию выключено, через **Search API**.
+- [x] Структура: **только чаты** (без проектов в MVP).
+- [x] ACL: **по ролям** (без per-user исключений).
 
 ---
 
 ## Milestone 0 — Репо и инфраструктура разработки
-- [ ] Инициализировать монорепо структуру: `apps/web`, `apps/api`, `apps/worker`, `deploy/compose`, `db/migrations`, `scripts`.
-- [ ] Подготовить `docker-compose` для dev/self-host: `web`, `api`, `worker`, `postgres`, `redis`, `minio`, опционально `ollama`.
-- [ ] Настроить конфиги через env: `.env.example` с пояснениями переменных.
-- [ ] Добавить миграции Postgres + расширения: `vector`, `pg_trgm`.
-- [ ] Добавить базовые health endpoints: `GET /healthz` (api/worker).
+- [x] Инициализировать монорепо структуру: `apps/web`, `apps/api`, `apps/worker`, `deploy/compose`, `db/migrations`, `scripts`.
+- [x] Подготовить `docker-compose` для dev/self-host: `web`, `api`, `worker`, `postgres`, `redis`, `minio`, опционально `ollama`.
+- [x] Настроить конфиги через env: `.env.example` с пояснениями переменных.
+- [x] Добавить миграции Postgres + расширения: `vector`, `pg_trgm`.
+- [x] Добавить базовые health endpoints: `GET /healthz` (api/worker).
 
 ## Milestone 1 — Auth + Org + RBAC (ядро безопасности)
 - [ ] Схема БД: `organizations`, `users`, `roles` (везде `org_id` где нужно).
@@ -137,4 +137,3 @@
 - [ ] Strict отвечает только на основе KB, с цитатами, без галлюцинаций (fallback “Недостаточно данных…”).
 - [ ] RBAC гарантирует отсутствие утечек знаний между ролями и org.
 - [ ] Self-host поднимается через docker-compose с закрытыми Docker images.
-
