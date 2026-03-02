@@ -7,25 +7,35 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/auth"
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/queue"
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/storage"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/store"
+	"github.com/google/uuid"
 )
 
 type Server struct {
 	httpServer *http.Server
 	store      *store.Store
 	auth       *auth.Manager
+	storage    *storage.Client
+	queue      *queue.Client
 	corsOrigin string
 }
 
-func New(addr string, dbStore *store.Store, tokenManager *auth.Manager, corsOrigin string) *Server {
+func New(addr string, dbStore *store.Store, tokenManager *auth.Manager, storageClient *storage.Client, queueClient *queue.Client, corsOrigin string) *Server {
 	apiServer := &Server{
 		store:      dbStore,
 		auth:       tokenManager,
+		storage:    storageClient,
+		queue:      queueClient,
 		corsOrigin: corsOrigin,
 	}
 
@@ -40,6 +50,7 @@ func New(addr string, dbStore *store.Store, tokenManager *auth.Manager, corsOrig
 	mux.HandleFunc("POST /auth/logout", apiServer.logout)
 
 	mux.Handle("GET /me", chain(http.HandlerFunc(apiServer.me), authMW))
+	mux.Handle("GET /roles", chain(http.HandlerFunc(apiServer.roles), authMW))
 
 	mux.Handle("GET /admin/roles", chain(
 		http.HandlerFunc(apiServer.listRoles),
@@ -61,10 +72,21 @@ func New(addr string, dbStore *store.Store, tokenManager *auth.Manager, corsOrig
 		authMW,
 		requirePermission(store.PermissionManageUsers),
 	))
+	mux.Handle("GET /documents", chain(
+		http.HandlerFunc(apiServer.listDocuments),
+		authMW,
+	))
+	mux.Handle("POST /documents/upload", chain(
+		http.HandlerFunc(apiServer.uploadDocument),
+		authMW,
+		requirePermission(store.PermissionUploadDocs),
+	))
 
 	return &Server{
 		store:      dbStore,
 		auth:       tokenManager,
+		storage:    storageClient,
+		queue:      queueClient,
 		corsOrigin: corsOrigin,
 		httpServer: &http.Server{
 			Addr:              addr,
@@ -272,6 +294,17 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, user)
 }
 
+func (s *Server) roles(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	roles, err := s.store.ListRoles(r.Context(), user.OrgID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list roles")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string][]store.Role{"roles": roles})
+}
+
 func (s *Server) listRoles(w http.ResponseWriter, r *http.Request) {
 	user, _ := currentUser(r.Context())
 	roles, err := s.store.ListRoles(r.Context(), user.OrgID)
@@ -343,6 +376,73 @@ func (s *Server) updateUserRole(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (s *Server) listDocuments(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	documents, err := s.store.ListDocuments(r.Context(), user.OrgID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list documents")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string][]store.Document{"documents": documents})
+}
+
+func (s *Server) uploadDocument(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid multipart form")
+		return
+	}
+
+	file, fileHeader, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "file is required")
+		return
+	}
+	defer file.Close()
+
+	title := strings.TrimSpace(r.FormValue("title"))
+	if title == "" {
+		title = fileHeader.Filename
+	}
+
+	contentType := normalizeContentType(fileHeader)
+	roleIDs, err := parseRoleIDs(r.Form["allowed_role_ids"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	storageKey := fmt.Sprintf("%s/%s/%s", user.OrgID, time.Now().Format("2006/01/02"), uuid.NewString()+filepath.Ext(fileHeader.Filename))
+	if err := s.storage.Upload(r.Context(), storageKey, file, contentType); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to upload file")
+		return
+	}
+
+	document, err := s.store.CreateDocument(r.Context(), store.CreateDocumentParams{
+		OrgID:          user.OrgID,
+		Title:          title,
+		Filename:       fileHeader.Filename,
+		MIME:           contentType,
+		StorageKey:     storageKey,
+		AllowedRoleIDs: roleIDs,
+		CreatedBy:      user.ID,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to create document: %v", err))
+		return
+	}
+
+	if err := s.queue.EnqueueDocumentIngest(r.Context(), document.ID); err != nil {
+		_ = s.store.UpdateDocumentStatus(r.Context(), document.ID, "failed")
+		writeError(w, http.StatusInternalServerError, "failed to schedule ingestion")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, document)
+}
+
 func decodeJSONBody(r *http.Request, dst interface{}) error {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
@@ -360,6 +460,42 @@ func decodeJSONBody(r *http.Request, dst interface{}) error {
 	}
 
 	return nil
+}
+
+func parseRoleIDs(values []string) ([]int64, error) {
+	if len(values) == 0 {
+		return nil, errors.New("allowed_role_ids is required")
+	}
+
+	roleIDs := make([]int64, 0, len(values))
+	for _, rawValue := range values {
+		for _, chunk := range strings.Split(rawValue, ",") {
+			cleanValue := strings.TrimSpace(chunk)
+			if cleanValue == "" {
+				continue
+			}
+
+			roleID, err := strconv.ParseInt(cleanValue, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid role id: %s", cleanValue)
+			}
+			roleIDs = append(roleIDs, roleID)
+		}
+	}
+
+	if len(roleIDs) == 0 {
+		return nil, errors.New("allowed_role_ids must include at least one role")
+	}
+
+	return roleIDs, nil
+}
+
+func normalizeContentType(fileHeader *multipart.FileHeader) string {
+	contentType := strings.TrimSpace(fileHeader.Header.Get("Content-Type"))
+	if contentType == "" {
+		return "application/octet-stream"
+	}
+	return contentType
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, payload interface{}) {

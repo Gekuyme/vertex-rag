@@ -23,12 +23,19 @@ body {
 }
 
 .card {
-  width: min(680px, 100%);
+  width: min(980px, 100%);
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 16px;
   background: rgba(17, 25, 35, 0.75);
   padding: 28px;
   backdrop-filter: blur(8px);
+}
+
+.headerRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
 }
 
 .eyebrow {
@@ -62,3 +69,163 @@ code {
   padding: 2px 8px;
 }
 
+.toggleRow {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.tabButton {
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.05);
+  color: #d4e4f4;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
+.tabButton.active {
+  background: rgba(139, 197, 255, 0.2);
+  border-color: rgba(139, 197, 255, 0.65);
+}
+
+.formGrid {
+  margin-top: 16px;
+  display: grid;
+  gap: 14px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  color: #c2d7ec;
+}
+
+input,
+select {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.04);
+  color: #ffffff;
+  padding: 10px 12px;
+}
+
+fieldset {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  padding: 10px 12px 12px;
+}
+
+legend {
+  color: #c2d7ec;
+  padding: 0 6px;
+}
+
+button {
+  width: fit-content;
+  border-radius: 10px;
+  border: 1px solid rgba(139, 197, 255, 0.7);
+  background: rgba(139, 197, 255, 0.15);
+  color: #e9f3ff;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.profileRow {
+  margin-top: 22px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.notice {
+  margin-top: 16px;
+}
+
+.adminPanel {
+  margin-top: 20px;
+}
+
+h2 {
+  margin: 0 0 10px;
+}
+
+h3 {
+  margin: 14px 0 8px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 10px 8px;
+  vertical-align: middle;
+}
+
+.assignRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.rolesGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+}
+
+.roleCheck {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.roleCheck input {
+  width: auto;
+}
+
+.message {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+}
+
+.message.success {
+  border: 1px solid rgba(111, 227, 174, 0.6);
+  background: rgba(111, 227, 174, 0.12);
+  color: #aff6d3;
+}
+
+.message.error {
+  border: 1px solid rgba(255, 133, 133, 0.6);
+  background: rgba(255, 133, 133, 0.12);
+  color: #ffc9c9;
+}
+
+@media (max-width: 840px) {
+  .headerRow,
+  .profileRow {
+    flex-direction: column;
+  }
+
+  .assignRow {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  button {
+    width: 100%;
+  }
+}

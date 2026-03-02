@@ -13,6 +13,8 @@ import (
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/auth"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/config"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/httpserver"
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/queue"
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/storage"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/store"
 )
 
@@ -37,7 +39,19 @@ func main() {
 		log.Fatalf("init auth manager: %v", err)
 	}
 
-	server := httpserver.New(cfg.APIAddr, dbStore, tokenManager, cfg.CORSOrigin)
+	storageClient, err := storage.NewS3Client(context.Background(), cfg.S3)
+	if err != nil {
+		log.Fatalf("init storage client: %v", err)
+	}
+
+	queueClient := queue.NewClient(cfg.Redis)
+	defer func() {
+		if err := queueClient.Close(); err != nil {
+			log.Printf("close queue client: %v", err)
+		}
+	}()
+
+	server := httpserver.New(cfg.APIAddr, dbStore, tokenManager, storageClient, queueClient, cfg.CORSOrigin)
 
 	errCh := make(chan error, 1)
 	go func() {

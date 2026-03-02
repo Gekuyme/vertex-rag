@@ -28,29 +28,29 @@
 - [x] Auth (MVP): email+password (Argon2id), JWT access + refresh (httpOnly cookie).
 - [x] Middleware: извлечение `org_id` + роль пользователя для каждого запроса.
 - [x] Permissions (минимум): `can_upload_docs`, `can_manage_users`, `can_manage_roles`, `can_manage_documents`, `can_toggle_web_search`.
-- [ ] Owner/Admin UI: управление пользователями (назначение ролей).
+- [x] Owner/Admin UI: управление пользователями (назначение ролей).
 - [x] **Критерий готовности:** пользователь без прав не может дергать admin endpoints и не видит чужой `org_id`.
 
 ## Milestone 2 — Knowledge Base: документы + ACL по ролям
-- [ ] Схема БД: `documents`, `document_chunks` (embedding + metadata + `allowed_role_ids int[]`).
-- [ ] API загрузки документа: `POST /documents/upload` (multipart) + выбор `allowed_role_ids[]`.
-- [ ] S3 storage через MinIO: загрузка файла, сохранение `storage_key`.
-- [ ] API списка документов: `GET /documents` + статусы обработки (`uploaded|processing|ready|failed`).
-- [ ] UI `/knowledge`: загрузка, выбор ролей доступа, просмотр статуса.
+- [x] Схема БД: `documents`, `document_chunks` (embedding + metadata + `allowed_role_ids int[]`).
+- [x] API загрузки документа: `POST /documents/upload` (multipart) + выбор `allowed_role_ids[]`.
+- [x] S3 storage через MinIO: загрузка файла, сохранение `storage_key`.
+- [x] API списка документов: `GET /documents` + статусы обработки (`uploaded|processing|ready|failed`).
+- [x] UI `/knowledge`: загрузка, выбор ролей доступа, просмотр статуса.
 - [ ] **Критерий готовности:** документ, доступный только Owner, не появляется в retrieval для Member.
 
 ## Milestone 3 — Ingestion pipeline (worker) + индексация
-- [ ] Очередь задач (Redis): задача `ingest_document(document_id)`.
-- [ ] Extract text:
-  - [ ] PDF: `pdftotext` в контейнере worker.
-  - [ ] DOCX: извлечение текста библиотекой.
-  - [ ] MD/TXT: напрямую.
-- [ ] Нормализация текста (удаление мусора/повторов).
-- [ ] Чанкинг: ~800–1200 токенов, overlap ~100, metadata (`page/section/source`).
-- [ ] Embeddings provider interface: `Embed(texts[]) -> vectors[]` (batch + rate limit).
-- [ ] Реализации embeddings: `openai`, `ollama`.
-- [ ] Запись чанков в `document_chunks` + индексы (pgvector + full-text).
-- [ ] Инвалидация кэша: `organizations.kb_version++` при успешной индексации/изменении KB.
+- [x] Очередь задач (Redis): задача `ingest_document(document_id)`.
+- [x] Extract text:
+  - [x] PDF: `pdftotext` в контейнере worker.
+  - [x] DOCX: извлечение текста библиотекой.
+  - [x] MD/TXT: напрямую.
+- [x] Нормализация текста (удаление мусора/повторов).
+- [x] Чанкинг: ~800–1200 токенов, overlap ~100, metadata (`page/section/source`).
+- [x] Embeddings provider interface: `Embed(texts[]) -> vectors[]` (batch + rate limit).
+- [x] Реализации embeddings: `openai`, `ollama`.
+- [x] Запись чанков в `document_chunks` + индексы (pgvector + full-text).
+- [x] Инвалидация кэша: `organizations.kb_version++` при успешной индексации/изменении KB.
 - [ ] **Критерий готовности:** загрузка PDF → `ready` → чанки есть в БД, embedding не пустой.
 
 ## Milestone 4 — RAG retrieval (hybrid) + citations

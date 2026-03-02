@@ -4,6 +4,7 @@
 .idea/
 .vscode/
 node_modules/
+apps/web/.next/
 dist/
 build/
 coverage/
@@ -11,4 +12,3 @@ tmp/
 *.log
 apps/api/bin/
 apps/worker/bin/
-
