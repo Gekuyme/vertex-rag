@@ -17,6 +17,8 @@ type Config struct {
 	CORSOrigin  string
 	Redis       RedisConfig
 	S3          S3Config
+	Embeddings  EmbeddingConfig
+	LLM         LLMConfig
 }
 
 type RedisConfig struct {
@@ -32,6 +34,24 @@ type S3Config struct {
 	AccessKey string
 	SecretKey string
 	UseSSL    bool
+}
+
+type EmbeddingConfig struct {
+	Provider      string
+	OpenAIKey     string
+	OpenAIBaseURL string
+	OpenAIModel   string
+	OllamaBaseURL string
+	OllamaModel   string
+}
+
+type LLMConfig struct {
+	Provider      string
+	OpenAIKey     string
+	OpenAIBaseURL string
+	OpenAIModel   string
+	OllamaBaseURL string
+	OllamaModel   string
 }
 
 func Load() (Config, error) {
@@ -64,6 +84,22 @@ func Load() (Config, error) {
 			AccessKey: envOrDefault("S3_ACCESS_KEY", "minioadmin"),
 			SecretKey: envOrDefault("S3_SECRET_KEY", "minioadmin"),
 			UseSSL:    parseBoolWithDefault("S3_USE_SSL", false),
+		},
+		Embeddings: EmbeddingConfig{
+			Provider:      envOrDefault("EMBED_PROVIDER", "local"),
+			OpenAIKey:     envOrDefault("OPENAI_API_KEY", ""),
+			OpenAIBaseURL: envOrDefault("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+			OpenAIModel:   envOrDefault("EMBED_MODEL_OPENAI", "text-embedding-3-small"),
+			OllamaBaseURL: envOrDefault("OLLAMA_BASE_URL", "http://ollama:11434"),
+			OllamaModel:   envOrDefault("EMBED_MODEL_OLLAMA", "nomic-embed-text"),
+		},
+		LLM: LLMConfig{
+			Provider:      envOrDefault("LLM_PROVIDER", "local"),
+			OpenAIKey:     envOrDefault("OPENAI_API_KEY", ""),
+			OpenAIBaseURL: envOrDefault("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+			OpenAIModel:   envOrDefault("LLM_MODEL_OPENAI", "gpt-4o-mini"),
+			OllamaBaseURL: envOrDefault("OLLAMA_BASE_URL", "http://ollama:11434"),
+			OllamaModel:   envOrDefault("LLM_MODEL_OLLAMA", "llama3.2"),
 		},
 	}
 

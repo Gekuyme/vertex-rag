@@ -38,6 +38,7 @@ cat db/migrations/000002_auth_rbac.up.sql | docker compose -f deploy/compose/doc
 cat db/migrations/000003_documents.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
 cat db/migrations/000004_kb_version.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
 cat db/migrations/000005_document_embedding_vector.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
+cat db/migrations/000006_chat_settings.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
 ```
 
 4. Check health endpoints:
@@ -50,13 +51,13 @@ curl http://localhost:8082/healthz
 ## Make targets
 
 - `make rebuild` - rebuild and restart all services.
-- `make migrate` - apply SQL migrations (`000001`..`000005`).
+- `make migrate` - apply SQL migrations (`000001`..`000006`).
 - `make test` - run API and worker tests.
 - `make ps` - show compose status.
 
 ## Embeddings providers
 
-Worker supports `EMBED_PROVIDER=local|openai|ollama`:
+API and worker support `EMBED_PROVIDER=local|openai|ollama`:
 
 - `local` (default) - deterministic local embeddings for dev/no external dependency.
 - `openai` - set `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, and `EMBED_MODEL_OPENAI`.
@@ -69,10 +70,17 @@ Worker supports `EMBED_PROVIDER=local|openai|ollama`:
 - `POST /auth/refresh`
 - `POST /auth/logout`
 - `GET /me`
+- `GET /me/settings`
+- `PATCH /me/settings`
 - `GET /roles`
+- `GET /chats`
+- `POST /chats`
+- `GET /chats/{id}/messages`
+- `POST /chats/{id}/messages`
 - `GET /admin/roles`
 - `POST /admin/roles`
 - `GET /admin/users`
 - `PATCH /admin/users/{id}/role`
+- `POST /admin/retrieval/debug`
 - `GET /documents`
 - `POST /documents/upload`

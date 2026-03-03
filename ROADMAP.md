@@ -54,22 +54,22 @@
 - [ ] **Критерий готовности:** загрузка PDF → `ready` → чанки есть в БД, embedding не пустой.
 
 ## Milestone 4 — RAG retrieval (hybrid) + citations
-- [ ] Retrieval: vector similarity + full-text rank с объединенным скорингом.
-- [ ] Фильтры retrieval: `org_id`, `allowed_role_ids`, `documents.status=ready`.
-- [ ] Формирование “контекста” для LLM: top-k чанков + короткие snippets.
-- [ ] Структура citations: `chunk_id`, `document_id`, `doc_title`, `snippet`, `page/section`.
-- [ ] Endpoint/метод для дебага: вернуть retrieval результаты (только admin/dev) для диагностики качества.
+- [x] Retrieval: vector similarity + full-text rank с объединенным скорингом.
+- [x] Фильтры retrieval: `org_id`, `allowed_role_ids`, `documents.status=ready`.
+- [x] Формирование “контекста” для LLM: top-k чанков + короткие snippets.
+- [x] Структура citations: `chunk_id`, `document_id`, `doc_title`, `snippet`, `page/section`.
+- [x] Endpoint/метод для дебага: вернуть retrieval результаты (только admin/dev) для диагностики качества.
 - [ ] **Критерий готовности:** на один и тот же вопрос retrieval стабильно возвращает релевантные чанки.
 
 ## Milestone 5 — Strict / Unstrict (надежность переключателя)
-- [ ] UI toggle `strict|unstrict` в header.
-- [ ] Сохранение default режима: `PATCH /me/settings { default_mode }`.
-- [ ] Сервер фиксирует mode на старте запроса (per-request) и сохраняет в `messages.mode`.
+- [x] UI toggle `strict|unstrict` в header.
+- [x] Сохранение default режима: `PATCH /me/settings { default_mode }`.
+- [x] Сервер фиксирует mode на старте запроса (per-request) и сохраняет в `messages.mode`.
 - [ ] Strict:
   - [ ] Запрет web-search/tool вызовов.
   - [ ] Ответ только на основе retrieved chunks.
-  - [ ] Требовать structured output: `answer + citations[]`.
-  - [ ] Если данных нет/слабые → “Недостаточно данных в базе знаний” (без додумывания).
+  - [x] Требовать structured output: `answer + citations[]`.
+  - [x] Если данных нет/слабые → “Недостаточно данных в базе знаний” (без додумывания).
   - [ ] Server-side guard: если citations невалидны → 1 retry → fallback.
 - [ ] Unstrict:
   - [ ] Может отвечать общими знаниями.
@@ -85,7 +85,7 @@
 - [ ] **Критерий готовности:** можно переключить провайдера env-переменной без изменений кода приложения.
 
 ## Milestone 7 — Chat UI (AI-like) + streaming
-- [ ] Схема БД: `chats`, `messages`.
+- [x] Схема БД: `chats`, `messages`.
 - [ ] API чатов: list/create/get/delete.
 - [ ] API сообщений: `POST /chats/:id/messages/stream` (SSE).
 - [ ] UI `/chat`:
