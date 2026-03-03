@@ -1,11 +1,15 @@
 COMPOSE_FILE := deploy/compose/docker-compose.yml
+COMPOSE_DEV_FILE := deploy/compose/docker-compose.dev.yml
 ENV_FILE ?= .env
-COMPOSE := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE)
+COMPOSE := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE) -f $(COMPOSE_DEV_FILE)
+COMPOSE_SELFHOST := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE)
 
 .PHONY: help up up-core up-build rebuild rebuild-web rebuild-api rebuild-worker down ps logs logs-api logs-web logs-worker \
 	stop-web \
 	migrate migrate-extensions migrate-auth migrate-docs migrate-kb-version migrate-embedding-vector migrate-chat-settings \
-	test test-api test-worker build-web dev-web health
+	test test-api test-worker test-integration test-integration-acl test-integration-mode test-integration-pdf test-integration-retrieval test-integration-cache \
+	test-e2e \
+	build-web dev-web health smoke-role-acl smoke-mode-toggle smoke-pdf-ingest smoke-retrieval-stability smoke-cache-speed up-selfhost pull-selfhost
 
 help:
 	@echo "Available targets:"
@@ -13,6 +17,8 @@ help:
 	@echo "  make up-core             - Start stack without Web (for local Next dev)"
 	@echo "  make up-build            - Start stack with image rebuild"
 	@echo "  make rebuild             - Rebuild and restart stack"
+	@echo "  make up-selfhost         - Start from prebuilt images only"
+	@echo "  make pull-selfhost       - Pull prebuilt images for self-host"
 	@echo "  make rebuild-web         - Rebuild and restart only Web"
 	@echo "  make rebuild-api         - Rebuild and restart only API"
 	@echo "  make rebuild-worker      - Rebuild and restart only Worker"
@@ -25,6 +31,18 @@ help:
 	@echo "  make logs-worker         - Tail Worker logs"
 	@echo "  make migrate             - Apply all SQL migrations"
 	@echo "  make test                - Run API and Worker tests"
+	@echo "  make test-e2e            - Run Playwright e2e smoke test"
+	@echo "  make test-integration    - Run integration test suite"
+	@echo "  make test-integration-acl - Run restricted doc ACL integration test"
+	@echo "  make test-integration-mode - Run strict/unstrict toggle integration test"
+	@echo "  make test-integration-pdf - Run PDF ingest + strict citations integration test"
+	@echo "  make test-integration-retrieval - Run retrieval stability + unstrict RBAC integration test"
+	@echo "  make test-integration-cache - Run strict cache performance integration test"
+	@echo "  make smoke-role-acl      - Run role-based ACL smoke scenario"
+	@echo "  make smoke-mode-toggle   - Run in-flight mode toggle smoke scenario"
+	@echo "  make smoke-pdf-ingest    - Run PDF ingest readiness smoke scenario"
+	@echo "  make smoke-retrieval-stability - Run retrieval stability smoke scenario"
+	@echo "  make smoke-cache-speed   - Run strict cache speed smoke scenario"
 	@echo "  make build-web           - Build Next.js app"
 	@echo "  make dev-web             - Run Next.js dev server locally (HMR)"
 	@echo "  make health              - Check API and Worker health"
@@ -37,6 +55,12 @@ up-core:
 
 up-build:
 	$(COMPOSE) up -d --build
+
+up-selfhost:
+	$(COMPOSE_SELFHOST) up -d
+
+pull-selfhost:
+	$(COMPOSE_SELFHOST) pull
 
 rebuild:
 	$(COMPOSE) up -d --build --force-recreate
@@ -93,11 +117,26 @@ migrate-chat-settings:
 
 test: test-api test-worker
 
+test-integration: test-integration-acl test-integration-mode test-integration-pdf test-integration-retrieval test-integration-cache
+
+test-integration-acl: smoke-role-acl
+
+test-integration-mode: smoke-mode-toggle
+
+test-integration-pdf: smoke-pdf-ingest
+
+test-integration-retrieval: smoke-retrieval-stability
+
+test-integration-cache: smoke-cache-speed
+
 test-api:
 	cd apps/api && go test ./...
 
 test-worker:
 	cd apps/worker && go test ./...
+
+test-e2e:
+	cd apps/web && npm run test:e2e
 
 build-web:
 	cd apps/web && npm run build
@@ -112,3 +151,18 @@ health:
 	@echo "Worker:"
 	@curl -sS http://localhost:8082/healthz
 	@echo
+
+smoke-role-acl:
+	./scripts/smoke_role_acl.sh
+
+smoke-mode-toggle:
+	./scripts/smoke_mode_toggle.sh
+
+smoke-pdf-ingest:
+	./scripts/smoke_pdf_ingest.sh
+
+smoke-retrieval-stability:
+	./scripts/smoke_retrieval_stability.sh
+
+smoke-cache-speed:
+	./scripts/smoke_cache_speed.sh

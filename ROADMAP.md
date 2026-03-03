@@ -37,7 +37,7 @@
 - [x] S3 storage через MinIO: загрузка файла, сохранение `storage_key`.
 - [x] API списка документов: `GET /documents` + статусы обработки (`uploaded|processing|ready|failed`).
 - [x] UI `/knowledge`: загрузка, выбор ролей доступа, просмотр статуса.
-- [ ] **Критерий готовности:** документ, доступный только Owner, не появляется в retrieval для Member.
+- [x] **Критерий готовности:** документ, доступный только Owner, не появляется в retrieval для Member.
 
 ## Milestone 3 — Ingestion pipeline (worker) + индексация
 - [x] Очередь задач (Redis): задача `ingest_document(document_id)`.
@@ -51,7 +51,7 @@
 - [x] Реализации embeddings: `openai`, `ollama`.
 - [x] Запись чанков в `document_chunks` + индексы (pgvector + full-text).
 - [x] Инвалидация кэша: `organizations.kb_version++` при успешной индексации/изменении KB.
-- [ ] **Критерий готовности:** загрузка PDF → `ready` → чанки есть в БД, embedding не пустой.
+- [x] **Критерий готовности:** загрузка PDF → `ready` → чанки есть в БД, embedding не пустой.
 
 ## Milestone 4 — RAG retrieval (hybrid) + citations
 - [x] Retrieval: vector similarity + full-text rank с объединенным скорингом.
@@ -59,36 +59,36 @@
 - [x] Формирование “контекста” для LLM: top-k чанков + короткие snippets.
 - [x] Структура citations: `chunk_id`, `document_id`, `doc_title`, `snippet`, `page/section`.
 - [x] Endpoint/метод для дебага: вернуть retrieval результаты (только admin/dev) для диагностики качества.
-- [ ] **Критерий готовности:** на один и тот же вопрос retrieval стабильно возвращает релевантные чанки.
+- [x] **Критерий готовности:** на один и тот же вопрос retrieval стабильно возвращает релевантные чанки.
 
 ## Milestone 5 — Strict / Unstrict (надежность переключателя)
 - [x] UI toggle `strict|unstrict` в header.
 - [x] Сохранение default режима: `PATCH /me/settings { default_mode }`.
 - [x] Сервер фиксирует mode на старте запроса (per-request) и сохраняет в `messages.mode`.
-- [ ] Strict:
+- [x] Strict:
   - [x] Запрет web-search/tool вызовов.
-  - [ ] Ответ только на основе retrieved chunks.
+  - [x] Ответ только на основе retrieved chunks.
   - [x] Требовать structured output: `answer + citations[]`.
   - [x] Если данных нет/слабые → “Недостаточно данных в базе знаний” (без додумывания).
   - [x] Server-side guard: если citations невалидны → 1 retry → fallback.
-- [ ] Unstrict:
-  - [ ] Может отвечать общими знаниями.
-  - [ ] RBAC на внутренние чанки сохраняется.
-  - [ ] Web-search модуль (опционально, feature-flag).
+- [x] Unstrict:
+  - [x] Может отвечать общими знаниями.
+  - [x] RBAC на внутренние чанки сохраняется.
+  - [x] Web-search модуль (опционально, feature-flag).
 - [x] **Критерий готовности:** переключение в UI не влияет на in-flight стрим, влияет только на следующий запрос.
 
 ## Milestone 6 — LLM Provider layer (сменность провайдера)
-- [ ] Интерфейс `LLMProvider` (stream + non-stream).
+- [x] Интерфейс `LLMProvider` (stream + non-stream).
 - [x] Реализации: `openai`, `ollama`.
 - [x] Конфиг выбора провайдера: `LLM_PROVIDER`, `EMBED_PROVIDER`.
-- [ ] Настроить timeouts, retries, backoff, лимиты контекста.
+- [x] Настроить timeouts, retries, backoff, лимиты контекста.
 - [x] **Критерий готовности:** можно переключить провайдера env-переменной без изменений кода приложения.
 
 ## Milestone 7 — Chat UI (AI-like) + streaming
 - [x] Схема БД: `chats`, `messages`.
 - [x] API чатов: list/create/get/delete.
 - [x] API сообщений: `POST /chats/:id/messages/stream` (SSE).
-- [ ] UI `/chat`:
+- [x] UI `/chat`:
   - [x] Sidebar список чатов + “New chat”.
   - [x] Streaming ответа (“typing”).
   - [x] Отображение режима (strict/unstrict) на сообщениях ассистента.
@@ -97,43 +97,43 @@
 
 ## Milestone 8 — Кэширование (Redis) + производительность
 - [x] Кэш retrieval: ключ включает `org_id`, `role_id`, `mode`, `normalized_query`, `kb_version`.
-- [ ] Кэш answer:
+- [x] Кэш answer:
   - [x] strict: кэшировать ответ + citations.
-  - [ ] unstrict: опционально (в MVP можно включить, но осторожно с web-search).
+  - [x] unstrict: опционально (в MVP можно включить, но осторожно с web-search).
 - [x] Pre-warm/часто выбираемые документы: статистика top docs (минимум счетчики).
-- [ ] **Критерий готовности:** повторный вопрос отвечает быстрее за счет кэша, без нарушения RBAC.
+- [x] **Критерий готовности:** повторный вопрос отвечает быстрее за счет кэша, без нарушения RBAC.
 
 ## Milestone 9 — Admin: роли/доступы (Owner UI)
-- [ ] UI `/admin/roles`: CRUD ролей + permissions.
-- [ ] UI назначения ролей пользователям.
-- [ ] Валидация: нельзя удалить роль, если она назначена пользователям (или предусмотреть миграцию).
-- [ ] **Критерий готовности:** Owner может создать роль, загрузить документ только для этой роли, и проверить доступ.
+- [x] UI `/admin/roles`: CRUD ролей + permissions.
+- [x] UI назначения ролей пользователям.
+- [x] Валидация: нельзя удалить роль, если она назначена пользователям (или предусмотреть миграцию).
+- [x] **Критерий готовности:** Owner может создать роль, загрузить документ только для этой роли, и проверить доступ.
 
 ## Milestone 10 — Self-host release (без исходников)
-- [ ] `deploy/compose/docker-compose.yml` использует prebuilt images из private registry.
-- [ ] Документация деплоя: требования, env-переменные, включение `ollama`, миграции БД.
-- [ ] Hardening минимум: секреты, CORS, cookie settings, rate limiting.
-- [ ] **Критерий готовности:** поднятие через compose “с нуля” и работа end-to-end.
+- [x] `deploy/compose/docker-compose.yml` использует prebuilt images из private registry.
+- [x] Документация деплоя: требования, env-переменные, включение `ollama`, миграции БД.
+- [x] Hardening минимум: секреты, CORS, cookie settings, rate limiting.
+- [x] **Критерий готовности:** поднятие через compose “с нуля” и работа end-to-end.
 
 ---
 
 ## Тесты и приемка (минимум для MVP)
-- [ ] Unit (Go):
-  - [ ] RBAC фильтры retrieval.
-  - [ ] Strict guard (citations валидны).
-  - [ ] Cache key включает `kb_version`.
-- [ ] Integration (compose):
-  - [ ] Upload → ingest → strict answer с citations.
-  - [ ] Документ restricted → недоступен пользователю без роли.
-  - [ ] Strict/unstrict toggle влияет только на следующий запрос.
-- [ ] E2E (Playwright минимум):
-  - [ ] Login → upload → chat strict → citations.
+- [x] Unit (Go):
+  - [x] RBAC фильтры retrieval.
+  - [x] Strict guard (citations валидны).
+  - [x] Cache key включает `kb_version`.
+- [x] Integration (compose):
+  - [x] Upload → ingest → strict answer с citations.
+  - [x] Документ restricted → недоступен пользователю без роли.
+  - [x] Strict/unstrict toggle влияет только на следующий запрос.
+- [x] E2E (Playwright минимум):
+  - [x] Login → upload → chat strict → citations.
 
 ---
 
 ## Definition of Done (MVP)
-- [ ] Рабочий чат со стримингом + toggle strict/unstrict.
-- [ ] UI загрузки документов с выбором ролей доступа.
-- [ ] Strict отвечает только на основе KB, с цитатами, без галлюцинаций (fallback “Недостаточно данных…”).
-- [ ] RBAC гарантирует отсутствие утечек знаний между ролями и org.
-- [ ] Self-host поднимается через docker-compose с закрытыми Docker images.
+- [x] Рабочий чат со стримингом + toggle strict/unstrict.
+- [x] UI загрузки документов с выбором ролей доступа.
+- [x] Strict отвечает только на основе KB, с цитатами, без галлюцинаций (fallback “Недостаточно данных…”).
+- [x] RBAC гарантирует отсутствие утечек знаний между ролями и org.
+- [x] Self-host поднимается через docker-compose с закрытыми Docker images.

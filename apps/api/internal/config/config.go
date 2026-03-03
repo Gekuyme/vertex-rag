@@ -9,17 +9,24 @@ import (
 )
 
 type Config struct {
-	APIAddr     string
-	DatabaseURL string
-	JWTSecret   string
-	AccessTTL   time.Duration
-	RefreshTTL  time.Duration
-	CORSOrigin  string
-	Redis       RedisConfig
-	Cache       CacheConfig
-	S3          S3Config
-	Embeddings  EmbeddingConfig
-	LLM         LLMConfig
+	AppEnv         string
+	APIAddr        string
+	DatabaseURL    string
+	JWTSecret      string
+	AccessTTL      time.Duration
+	RefreshTTL     time.Duration
+	CORSOrigin     string
+	CORSOrigins    []string
+	CookieSecure   bool
+	CookieSameSite string
+	RateLimitRPM   int
+	RateLimitBurst int
+	Redis          RedisConfig
+	Cache          CacheConfig
+	S3             S3Config
+	Embeddings     EmbeddingConfig
+	LLM            LLMConfig
+	Search         SearchConfig
 }
 
 type RedisConfig struct {
@@ -29,9 +36,10 @@ type RedisConfig struct {
 }
 
 type CacheConfig struct {
-	Enabled      bool
-	RetrievalTTL time.Duration
-	AnswerTTL    time.Duration
+	Enabled               bool
+	RetrievalTTL          time.Duration
+	AnswerTTL             time.Duration
+	UnstrictAnswerEnabled bool
 }
 
 type S3Config struct {
@@ -41,6 +49,14 @@ type S3Config struct {
 	AccessKey string
 	SecretKey string
 	UseSSL    bool
+}
+
+type SearchConfig struct {
+	Enabled    bool
+	Provider   string
+	APIKey     string
+	MaxResults int
+	Timeout    time.Duration
 }
 
 type EmbeddingConfig struct {
@@ -53,14 +69,24 @@ type EmbeddingConfig struct {
 }
 
 type LLMConfig struct {
-	Provider        string
-	OpenAIKey       string
-	OpenAIBaseURL   string
-	OpenAIModel     string
-	OllamaBaseURL   string
-	OllamaModel     string
-	OllamaNumCtx    int
-	OllamaKeepAlive string
+	Provider              string
+	OpenAIKey             string
+	OpenAIBaseURL         string
+	OpenAIModel           string
+	OpenAIModelStrict     string
+	OpenAIModelUnstrict   string
+	OllamaBaseURL         string
+	OllamaBaseURLStrict   string
+	OllamaBaseURLUnstrict string
+	OllamaModel           string
+	OllamaModelStrict     string
+	OllamaModelUnstrict   string
+	OllamaNumCtx          int
+	OllamaKeepAlive       string
+	HTTPTimeout           time.Duration
+	MaxRetries            int
+	RetryBackoff          time.Duration
+	MaxContextChars       int
 }
 
 func Load() (Config, error) {
@@ -81,23 +107,48 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("parse CACHE_ANSWER_TTL: %w", err)
 	}
+	searchTimeout, err := parseDurationWithDefault("SEARCH_HTTP_TIMEOUT", "6s")
+	if err != nil {
+		return Config{}, fmt.Errorf("parse SEARCH_HTTP_TIMEOUT: %w", err)
+	}
+	llmHTTPTimeout, err := parseDurationWithDefault("LLM_HTTP_TIMEOUT", "60s")
+	if err != nil {
+		return Config{}, fmt.Errorf("parse LLM_HTTP_TIMEOUT: %w", err)
+	}
+	llmRetryBackoff, err := parseDurationWithDefault("LLM_RETRY_BACKOFF", "400ms")
+	if err != nil {
+		return Config{}, fmt.Errorf("parse LLM_RETRY_BACKOFF: %w", err)
+	}
+
+	corsOrigins := parseCSVEnv("CORS_ORIGIN")
+	if len(corsOrigins) == 0 {
+		corsOrigins = []string{"http://localhost:3000"}
+	}
+	corsOrigin := corsOrigins[0]
 
 	cfg := Config{
-		APIAddr:     ":" + envOrDefault("API_PORT", "8080"),
-		DatabaseURL: envOrDefault("DATABASE_URL", "postgres://vertex:vertex@localhost:5432/vertex_rag?sslmode=disable"),
-		JWTSecret:   envOrDefault("JWT_SECRET", "change-me"),
-		AccessTTL:   accessTTL,
-		RefreshTTL:  refreshTTL,
-		CORSOrigin:  envOrDefault("CORS_ORIGIN", "http://localhost:3000"),
+		AppEnv:         strings.ToLower(strings.TrimSpace(envOrDefault("APP_ENV", "development"))),
+		APIAddr:        ":" + envOrDefault("API_PORT", "8080"),
+		DatabaseURL:    envOrDefault("DATABASE_URL", "postgres://vertex:vertex@localhost:5432/vertex_rag?sslmode=disable"),
+		JWTSecret:      envOrDefault("JWT_SECRET", "change-me"),
+		AccessTTL:      accessTTL,
+		RefreshTTL:     refreshTTL,
+		CORSOrigin:     corsOrigin,
+		CORSOrigins:    corsOrigins,
+		CookieSecure:   parseBoolWithDefault("COOKIE_SECURE", false),
+		CookieSameSite: strings.ToLower(strings.TrimSpace(envOrDefault("COOKIE_SAMESITE", "lax"))),
+		RateLimitRPM:   parseIntWithDefault("RATE_LIMIT_RPM", 240),
+		RateLimitBurst: parseIntWithDefault("RATE_LIMIT_BURST", 60),
 		Redis: RedisConfig{
 			Addr:     envOrDefault("REDIS_ADDR", "redis:6379"),
 			Password: envOrDefault("REDIS_PASSWORD", ""),
 			DB:       parseIntWithDefault("REDIS_DB", 0),
 		},
 		Cache: CacheConfig{
-			Enabled:      parseBoolWithDefault("CACHE_ENABLED", true),
-			RetrievalTTL: retrievalTTL,
-			AnswerTTL:    answerTTL,
+			Enabled:               parseBoolWithDefault("CACHE_ENABLED", true),
+			RetrievalTTL:          retrievalTTL,
+			AnswerTTL:             answerTTL,
+			UnstrictAnswerEnabled: parseBoolWithDefault("CACHE_UNSTRICT_ANSWER", false),
 		},
 		S3: S3Config{
 			Endpoint:  envOrDefault("S3_ENDPOINT", "minio:9000"),
@@ -116,15 +167,55 @@ func Load() (Config, error) {
 			OllamaModel:   envOrDefault("EMBED_MODEL_OLLAMA", "nomic-embed-text"),
 		},
 		LLM: LLMConfig{
-			Provider:        envOrDefault("LLM_PROVIDER", "local"),
-			OpenAIKey:       envOrDefault("OPENAI_API_KEY", ""),
-			OpenAIBaseURL:   envOrDefault("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-			OpenAIModel:     envOrDefault("LLM_MODEL_OPENAI", "gpt-4o-mini"),
-			OllamaBaseURL:   envOrDefault("OLLAMA_BASE_URL", "http://ollama:11434"),
-			OllamaModel:     envOrDefault("LLM_MODEL_OLLAMA", "llama3.2"),
-			OllamaNumCtx:    parseIntWithDefault("LLM_OLLAMA_NUM_CTX", 4096),
-			OllamaKeepAlive: envOrDefault("LLM_OLLAMA_KEEP_ALIVE", ""),
+			Provider:            envOrDefault("LLM_PROVIDER", "local"),
+			OpenAIKey:           envOrDefault("OPENAI_API_KEY", ""),
+			OpenAIBaseURL:       envOrDefault("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+			OpenAIModel:         envOrDefault("LLM_MODEL_OPENAI", "gpt-4o-mini"),
+			OpenAIModelStrict:   envOrDefault("LLM_MODEL_OPENAI_STRICT", ""),
+			OpenAIModelUnstrict: envOrDefault("LLM_MODEL_OPENAI_UNSTRICT", ""),
+			// Keep backwards compatibility: OLLAMA_BASE_URL still works for both embeddings and LLM.
+			// LLM-specific overrides allow pointing strict/unstrict to different Ollama hosts.
+			OllamaBaseURL:         envOrDefault("LLM_OLLAMA_BASE_URL", envOrDefault("OLLAMA_BASE_URL", "http://ollama:11434")),
+			OllamaBaseURLStrict:   envOrDefault("LLM_OLLAMA_BASE_URL_STRICT", envOrDefault("LLM_OLLAMA_BASE_URL", envOrDefault("OLLAMA_BASE_URL", "http://ollama:11434"))),
+			OllamaBaseURLUnstrict: envOrDefault("LLM_OLLAMA_BASE_URL_UNSTRICT", envOrDefault("LLM_OLLAMA_BASE_URL", envOrDefault("OLLAMA_BASE_URL", "http://ollama:11434"))),
+			OllamaModel:           envOrDefault("LLM_MODEL_OLLAMA", "llama3.2"),
+			OllamaModelStrict:     envOrDefault("LLM_MODEL_OLLAMA_STRICT", ""),
+			OllamaModelUnstrict:   envOrDefault("LLM_MODEL_OLLAMA_UNSTRICT", ""),
+			OllamaNumCtx:          parseIntWithDefault("LLM_OLLAMA_NUM_CTX", 4096),
+			OllamaKeepAlive:       envOrDefault("LLM_OLLAMA_KEEP_ALIVE", ""),
+			HTTPTimeout:           llmHTTPTimeout,
+			MaxRetries:            parseIntWithDefault("LLM_MAX_RETRIES", 2),
+			RetryBackoff:          llmRetryBackoff,
+			MaxContextChars:       parseIntWithDefault("LLM_MAX_CONTEXT_CHARS", 7000),
 		},
+		Search: SearchConfig{
+			Enabled:    parseBoolWithDefault("WEB_SEARCH_ENABLED", false),
+			Provider:   envOrDefault("SEARCH_API_PROVIDER", "brave"),
+			APIKey:     envOrDefault("SEARCH_API_KEY", ""),
+			MaxResults: parseIntWithDefault("SEARCH_MAX_RESULTS", 5),
+			Timeout:    searchTimeout,
+		},
+	}
+	if cfg.RateLimitRPM < 0 {
+		cfg.RateLimitRPM = 0
+	}
+	if cfg.RateLimitBurst < 1 {
+		cfg.RateLimitBurst = 1
+	}
+	if cfg.LLM.MaxRetries < 0 {
+		cfg.LLM.MaxRetries = 0
+	}
+	if cfg.LLM.MaxContextChars < 500 {
+		cfg.LLM.MaxContextChars = 7000
+	}
+	if cfg.AppEnv == "production" && strings.TrimSpace(cfg.JWTSecret) == "change-me" {
+		return Config{}, fmt.Errorf("JWT_SECRET must be changed in production")
+	}
+	if cfg.CookieSameSite != "lax" && cfg.CookieSameSite != "strict" && cfg.CookieSameSite != "none" {
+		cfg.CookieSameSite = "lax"
+	}
+	if cfg.CookieSameSite == "none" {
+		cfg.CookieSecure = true
 	}
 
 	return cfg, nil
@@ -172,4 +263,23 @@ func parseIntWithDefault(key string, fallback int) int {
 	}
 
 	return parsedValue
+}
+
+func parseCSVEnv(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+
+	values := strings.Split(raw, ",")
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		normalized = append(normalized, trimmed)
+	}
+
+	return normalized
 }

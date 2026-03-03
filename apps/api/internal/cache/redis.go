@@ -11,10 +11,11 @@ import (
 )
 
 type Client struct {
-	enabled      bool
-	retrievalTTL time.Duration
-	answerTTL    time.Duration
-	redis        *redis.Client
+	enabled               bool
+	retrievalTTL          time.Duration
+	answerTTL             time.Duration
+	unstrictAnswerEnabled bool
+	redis                 *redis.Client
 }
 
 type TopDocStat struct {
@@ -24,9 +25,10 @@ type TopDocStat struct {
 
 func NewClient(redisCfg config.RedisConfig, cacheCfg config.CacheConfig) *Client {
 	client := &Client{
-		enabled:      cacheCfg.Enabled,
-		retrievalTTL: cacheCfg.RetrievalTTL,
-		answerTTL:    cacheCfg.AnswerTTL,
+		enabled:               cacheCfg.Enabled,
+		retrievalTTL:          cacheCfg.RetrievalTTL,
+		answerTTL:             cacheCfg.AnswerTTL,
+		unstrictAnswerEnabled: cacheCfg.UnstrictAnswerEnabled,
 	}
 
 	if !cacheCfg.Enabled {
@@ -66,6 +68,10 @@ func (c *Client) AnswerTTL() time.Duration {
 		return 0
 	}
 	return c.answerTTL
+}
+
+func (c *Client) UnstrictAnswerEnabled() bool {
+	return c != nil && c.unstrictAnswerEnabled
 }
 
 func (c *Client) GetJSON(ctx context.Context, key string, destination any) (bool, error) {

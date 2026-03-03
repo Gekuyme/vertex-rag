@@ -1,0 +1,18 @@
+services:
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile
+    image: ${VERTEX_WEB_IMAGE:-ghcr.io/vertex-rag/vertex-rag-web:latest}
+
+  api:
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile
+    image: ${VERTEX_API_IMAGE:-ghcr.io/vertex-rag/vertex-rag-api:latest}
+
+  worker:
+    build:
+      context: ../../apps/worker
+      dockerfile: Dockerfile
+    image: ${VERTEX_WORKER_IMAGE:-ghcr.io/vertex-rag/vertex-rag-worker:latest}

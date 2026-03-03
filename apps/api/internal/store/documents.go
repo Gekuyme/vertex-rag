@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type Document struct {
@@ -129,6 +131,34 @@ func (s *Store) ListDocuments(ctx context.Context, orgID string) ([]Document, er
 	}
 
 	return documents, nil
+}
+
+func (s *Store) GetDocument(ctx context.Context, orgID, documentID string) (Document, error) {
+	var document Document
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, org_id, title, filename, mime, storage_key, status, allowed_role_ids, created_by, created_at, updated_at
+		FROM documents
+		WHERE org_id = $1 AND id = $2
+	`, orgID, documentID).Scan(
+		&document.ID,
+		&document.OrgID,
+		&document.Title,
+		&document.Filename,
+		&document.MIME,
+		&document.StorageKey,
+		&document.Status,
+		&document.AllowedRoleIDs,
+		&document.CreatedBy,
+		&document.CreatedAt,
+		&document.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Document{}, ErrNotFound
+		}
+		return Document{}, fmt.Errorf("get document: %w", err)
+	}
+	return document, nil
 }
 
 func (s *Store) GetRoleIDsForOrg(ctx context.Context, orgID string) ([]int64, error) {

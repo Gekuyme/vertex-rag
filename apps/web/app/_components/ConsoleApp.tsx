@@ -7,7 +7,7 @@ const APIBaseURL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:808
 const accessTokenStorageKey = "vertex_access_token";
 
 type ConsoleView = "chat" | "knowledge" | "users" | "account";
-type SettingsTab = "knowledge" | "users" | "account";
+type SettingsTab = "knowledge" | "users" | "roles" | "account";
 
 type User = {
   id: string;
@@ -23,6 +23,7 @@ type User = {
 type Role = {
   id: number;
   name: string;
+  is_default: boolean;
   permissions: string[];
 };
 
@@ -97,6 +98,15 @@ type ConsoleAppProps = {
   initialView?: ConsoleView;
 };
 
+const rolePermissionOptions = [
+  { key: "can_upload_docs", label: "Загрузка документов" },
+  { key: "can_manage_users", label: "Управление пользователями" },
+  { key: "can_manage_roles", label: "Управление ролями" },
+  { key: "can_manage_documents", label: "Управление документами" },
+  { key: "can_toggle_web_search", label: "Web-search в unstrict" },
+  { key: "can_use_unstrict", label: "Использование unstrict" }
+] as const;
+
 export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [view, setView] = useState<ConsoleView>(initialView);
@@ -116,6 +126,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const [selectedRoleIDs, setSelectedRoleIDs] = useState<number[]>([]);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [documentTitle, setDocumentTitle] = useState("");
+  const [editingRoleID, setEditingRoleID] = useState<number | null>(null);
+  const [roleDraftName, setRoleDraftName] = useState("");
+  const [roleDraftPermissions, setRoleDraftPermissions] = useState<string[]>([]);
 
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatID, setActiveChatID] = useState<string>("");
@@ -141,6 +154,10 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
   const canManageUsers = useMemo(
     () => Boolean(user?.permissions?.includes("can_manage_users")),
+    [user]
+  );
+  const canManageRoles = useMemo(
+    () => Boolean(user?.permissions?.includes("can_manage_roles")),
     [user]
   );
   const canUploadDocs = useMemo(
@@ -416,6 +433,48 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     }
   }
 
+  async function onReingestDocument(documentID: string) {
+    if (!token || !user) {
+      return;
+    }
+    setIsBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      await apiRequest(`/documents/${documentID}/reingest`, {
+        method: "POST",
+        token
+      });
+      await loadWorkspace(token, user);
+      setMessage("Документ отправлен в переиндексацию.");
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function onReingestAllDocuments() {
+    if (!token || !user) {
+      return;
+    }
+    setIsBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      const response = await apiRequest<{ scheduled_count: number; total_count: number }>("/documents/reingest_all", {
+        method: "POST",
+        token
+      });
+      await loadWorkspace(token, user);
+      setMessage(`Переиндексация запланирована: ${response.scheduled_count}/${response.total_count}.`);
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function onCreateChat() {
     if (!token) {
       return;
@@ -615,6 +674,105 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     }
   }
 
+  function resetRoleDraft() {
+    setEditingRoleID(null);
+    setRoleDraftName("");
+    setRoleDraftPermissions([]);
+  }
+
+  function onStartEditRole(role: Role) {
+    setEditingRoleID(role.id);
+    setRoleDraftName(role.name);
+    setRoleDraftPermissions(role.permissions || []);
+  }
+
+  function toggleRoleDraftPermission(permission: string) {
+    setRoleDraftPermissions((current) =>
+      current.includes(permission)
+        ? current.filter((entry) => entry !== permission)
+        : [...current, permission]
+    );
+  }
+
+  async function onSaveRole() {
+    if (!token || !user || !canManageRoles) {
+      return;
+    }
+
+    const cleanName = roleDraftName.trim();
+    if (cleanName === "") {
+      setError("Название роли обязательно.");
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      if (editingRoleID) {
+        await apiRequest(`/admin/roles/${editingRoleID}`, {
+          method: "PATCH",
+          token,
+          body: {
+            name: cleanName,
+            permissions: roleDraftPermissions
+          }
+        });
+        setMessage("Роль обновлена.");
+      } else {
+        await apiRequest("/admin/roles", {
+          method: "POST",
+          token,
+          body: {
+            name: cleanName,
+            permissions: roleDraftPermissions
+          }
+        });
+        setMessage("Роль создана.");
+      }
+
+      resetRoleDraft();
+      await loadWorkspace(token, user);
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function onDeleteRole(role: Role) {
+    if (!token || !user || !canManageRoles) {
+      return;
+    }
+    if (role.is_default) {
+      setError("Системные роли нельзя удалить.");
+      return;
+    }
+
+    if (!window.confirm(`Удалить роль «${role.name}»?`)) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      await apiRequest(`/admin/roles/${role.id}`, {
+        method: "DELETE",
+        token
+      });
+      if (editingRoleID === role.id) {
+        resetRoleDraft();
+      }
+      await loadWorkspace(token, user);
+      setMessage("Роль удалена.");
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   function onOpenCitationPreview(citation: Citation) {
     setActiveCitation(citation);
     setIsCitationPreviewOpen(true);
@@ -664,6 +822,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setSelectedRoleIDs([]);
     setSelectedFile(null);
     setDocumentTitle("");
+    setEditingRoleID(null);
+    setRoleDraftName("");
+    setRoleDraftPermissions([]);
 
     setChats([]);
     setActiveChatID("");
@@ -1028,6 +1189,13 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
                   <div className="panelSection">
                     <h2>Документы</h2>
+                    {canUploadDocs && (
+                      <div className="panelRow">
+                        <button type="button" className="btn btnSmall" onClick={() => void onReingestAllDocuments()} disabled={isBusy}>
+                          Переиндексировать все
+                        </button>
+                      </div>
+                    )}
                     <div className="tableWrap">
                       <table>
                         <thead>
@@ -1036,6 +1204,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                             <th>Файл</th>
                             <th>Статус</th>
                             <th>Роли доступа</th>
+                            {canUploadDocs && <th>Действия</th>}
                           </tr>
                         </thead>
                         <tbody>
@@ -1045,11 +1214,23 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                               <td>{entry.filename}</td>
                               <td>{entry.status}</td>
                               <td>{entry.allowed_role_ids.join(", ")}</td>
+                              {canUploadDocs && (
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="btn btnSmall"
+                                    onClick={() => void onReingestDocument(entry.id)}
+                                    disabled={isBusy}
+                                  >
+                                    Переиндексировать
+                                  </button>
+                                </td>
+                              )}
                             </tr>
                           ))}
                           {documents.length === 0 && (
                             <tr>
-                              <td colSpan={4}>Документов пока нет.</td>
+                              <td colSpan={canUploadDocs ? 5 : 4}>Документов пока нет.</td>
                             </tr>
                           )}
                         </tbody>
@@ -1114,6 +1295,90 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                             {users.length === 0 && (
                               <tr>
                                 <td colSpan={4}>Пользователи не найдены.</td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {!canManageRoles && (
+                    <p className="notice">У текущего пользователя нет прав на управление ролями.</p>
+                  )}
+                  {canManageRoles && (
+                    <div className="panelSection">
+                      <h2>Роли и разрешения</h2>
+                      <div className="formGrid">
+                        <label>
+                          Название роли
+                          <input
+                            type="text"
+                            value={roleDraftName}
+                            onChange={(event) => setRoleDraftName(event.target.value)}
+                            placeholder="Например: Analyst"
+                            disabled={isBusy}
+                          />
+                        </label>
+                        <div>
+                          <p className="hint">Разрешения</p>
+                          <div className="rolesGrid">
+                            {rolePermissionOptions.map((permission) => (
+                              <label key={permission.key} className="roleCheck">
+                                <input
+                                  type="checkbox"
+                                  checked={roleDraftPermissions.includes(permission.key)}
+                                  onChange={() => toggleRoleDraftPermission(permission.key)}
+                                  disabled={isBusy}
+                                />
+                                <span>{permission.label}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="assignRow">
+                          <button type="button" className="btn btnSmall" onClick={() => void onSaveRole()} disabled={isBusy}>
+                            {editingRoleID ? "Обновить роль" : "Создать роль"}
+                          </button>
+                          {editingRoleID && (
+                            <button type="button" className="btn btnGhost btnSmall" onClick={resetRoleDraft} disabled={isBusy}>
+                              Отмена
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="tableWrap">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Роль</th>
+                              <th>Разрешения</th>
+                              <th>Действия</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {roles.map((role) => (
+                              <tr key={role.id}>
+                                <td>
+                                  {role.name}
+                                  {role.is_default && " (default)"}
+                                </td>
+                                <td>{role.permissions.join(", ") || "—"}</td>
+                                <td>
+                                  <div className="assignRow">
+                                    <button type="button" className="btn btnSmall" onClick={() => onStartEditRole(role)} disabled={isBusy || role.is_default}>
+                                      Редактировать
+                                    </button>
+                                    <button type="button" className="btn btnGhost btnSmall" onClick={() => void onDeleteRole(role)} disabled={isBusy || role.is_default}>
+                                      Удалить
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                            {roles.length === 0 && (
+                              <tr>
+                                <td colSpan={3}>Роли не найдены.</td>
                               </tr>
                             )}
                           </tbody>
@@ -1216,6 +1481,14 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                   </button>
                   <button
                     type="button"
+                    className={`settingsModalBtn ${settingsTab === "roles" ? "active" : ""}`}
+                    disabled={!canManageRoles}
+                    onClick={() => setSettingsTab("roles")}
+                  >
+                    Роли
+                  </button>
+                  <button
+                    type="button"
                     className={`settingsModalBtn ${settingsTab === "account" ? "active" : ""}`}
                     onClick={() => setSettingsTab("account")}
                   >
@@ -1233,33 +1506,60 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                 <div className="settingsModalPane">
                   <div className="settingsPaneContent" key={settingsTab}>
                     {settingsTab === "knowledge" && (
-                      <div className="tableWrap">
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>Название</th>
-                              <th>Файл</th>
-                              <th>Статус</th>
-                              <th>Роли доступа</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {documents.map((entry) => (
-                              <tr key={entry.id}>
-                                <td>{entry.title}</td>
-                                <td>{entry.filename}</td>
-                                <td>{entry.status}</td>
-                                <td>{entry.allowed_role_ids.join(", ")}</td>
-                              </tr>
-                            ))}
-                            {documents.length === 0 && (
+                      <>
+                        {canUploadDocs && (
+                          <div className="settingsRow">
+                            <button
+                              type="button"
+                              className="btn btnSmall"
+                              onClick={() => void onReingestAllDocuments()}
+                              disabled={isBusy}
+                            >
+                              Переиндексировать все
+                            </button>
+                          </div>
+                        )}
+                        <div className="tableWrap">
+                          <table>
+                            <thead>
                               <tr>
-                                <td colSpan={4}>Документов пока нет.</td>
+                                <th>Название</th>
+                                <th>Файл</th>
+                                <th>Статус</th>
+                                <th>Роли доступа</th>
+                                {canUploadDocs && <th>Действия</th>}
                               </tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
+                            </thead>
+                            <tbody>
+                              {documents.map((entry) => (
+                                <tr key={entry.id}>
+                                  <td>{entry.title}</td>
+                                  <td>{entry.filename}</td>
+                                  <td>{entry.status}</td>
+                                  <td>{entry.allowed_role_ids.join(", ")}</td>
+                                  {canUploadDocs && (
+                                    <td>
+                                      <button
+                                        type="button"
+                                        className="btn btnSmall"
+                                        onClick={() => void onReingestDocument(entry.id)}
+                                        disabled={isBusy}
+                                      >
+                                        Переиндексировать
+                                      </button>
+                                    </td>
+                                  )}
+                                </tr>
+                              ))}
+                              {documents.length === 0 && (
+                                <tr>
+                                  <td colSpan={canUploadDocs ? 5 : 4}>Документов пока нет.</td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
                     )}
                     {settingsTab === "users" &&
                       (canManageUsers ? (
@@ -1318,6 +1618,99 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                         </div>
                       ) : (
                         <p className="notice">У текущего пользователя нет прав на управление пользователями.</p>
+                      ))}
+                    {settingsTab === "roles" &&
+                      (canManageRoles ? (
+                        <>
+                          <div className="formGrid">
+                            <label>
+                              Название роли
+                              <input
+                                type="text"
+                                value={roleDraftName}
+                                onChange={(event) => setRoleDraftName(event.target.value)}
+                                placeholder="Например: Analyst"
+                                disabled={isBusy}
+                              />
+                            </label>
+                            <div>
+                              <p className="hint">Разрешения</p>
+                              <div className="rolesGrid">
+                                {rolePermissionOptions.map((permission) => (
+                                  <label key={permission.key} className="roleCheck">
+                                    <input
+                                      type="checkbox"
+                                      checked={roleDraftPermissions.includes(permission.key)}
+                                      onChange={() => toggleRoleDraftPermission(permission.key)}
+                                      disabled={isBusy}
+                                    />
+                                    <span>{permission.label}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="assignRow">
+                              <button type="button" className="btn btnSmall" onClick={() => void onSaveRole()} disabled={isBusy}>
+                                {editingRoleID ? "Обновить роль" : "Создать роль"}
+                              </button>
+                              {editingRoleID && (
+                                <button type="button" className="btn btnGhost btnSmall" onClick={resetRoleDraft} disabled={isBusy}>
+                                  Отмена
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="tableWrap">
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>Роль</th>
+                                  <th>Разрешения</th>
+                                  <th>Действия</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {roles.map((role) => (
+                                  <tr key={role.id}>
+                                    <td>
+                                      {role.name}
+                                      {role.is_default && " (default)"}
+                                    </td>
+                                    <td>{role.permissions.join(", ") || "—"}</td>
+                                    <td>
+                                      <div className="assignRow">
+                                        <button
+                                          type="button"
+                                          className="btn btnSmall"
+                                          onClick={() => onStartEditRole(role)}
+                                          disabled={isBusy || role.is_default}
+                                        >
+                                          Редактировать
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="btn btnGhost btnSmall"
+                                          onClick={() => void onDeleteRole(role)}
+                                          disabled={isBusy || role.is_default}
+                                        >
+                                          Удалить
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))}
+                                {roles.length === 0 && (
+                                  <tr>
+                                    <td colSpan={3}>Роли не найдены.</td>
+                                  </tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </>
+                      ) : (
+                        <p className="notice">У текущего пользователя нет прав на управление ролями.</p>
                       ))}
                     {settingsTab === "account" && (
                       <>
