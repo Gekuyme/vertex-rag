@@ -22,6 +22,9 @@ services:
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       REDIS_DB: ${REDIS_DB:-0}
+      CACHE_ENABLED: ${CACHE_ENABLED:-true}
+      CACHE_RETRIEVAL_TTL: ${CACHE_RETRIEVAL_TTL:-10m}
+      CACHE_ANSWER_TTL: ${CACHE_ANSWER_TTL:-10m}
       LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       EMBED_PROVIDER: ${EMBED_PROVIDER:-local}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -30,8 +33,12 @@ services:
       EMBED_MODEL_OPENAI: ${EMBED_MODEL_OPENAI:-text-embedding-3-small}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       LLM_MODEL_OLLAMA: ${LLM_MODEL_OLLAMA:-llama3.2}
+      LLM_OLLAMA_NUM_CTX: ${LLM_OLLAMA_NUM_CTX:-4096}
+      LLM_OLLAMA_KEEP_ALIVE: ${LLM_OLLAMA_KEEP_ALIVE:-30m}
       EMBED_MODEL_OLLAMA: ${EMBED_MODEL_OLLAMA:-nomic-embed-text}
       WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-false}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - postgres
       - redis
@@ -61,6 +68,8 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
       S3_USE_SSL: ${S3_USE_SSL:-false}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - postgres
       - redis

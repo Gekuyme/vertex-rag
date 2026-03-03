@@ -192,6 +192,22 @@ func (s *Store) GetChat(ctx context.Context, orgID, chatID string) (Chat, error)
 	return chat, nil
 }
 
+func (s *Store) DeleteChat(ctx context.Context, orgID, chatID string) error {
+	result, err := s.pool.Exec(ctx, `
+		DELETE FROM chats
+		WHERE id = $1
+		  AND org_id = $2
+	`, chatID, orgID)
+	if err != nil {
+		return fmt.Errorf("delete chat: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+
+	return nil
+}
+
 func (s *Store) ListChatMessages(ctx context.Context, orgID, chatID string, limit int) ([]ChatMessage, error) {
 	if limit <= 0 {
 		limit = 200

@@ -16,6 +16,7 @@ type Config struct {
 	RefreshTTL  time.Duration
 	CORSOrigin  string
 	Redis       RedisConfig
+	Cache       CacheConfig
 	S3          S3Config
 	Embeddings  EmbeddingConfig
 	LLM         LLMConfig
@@ -25,6 +26,12 @@ type RedisConfig struct {
 	Addr     string
 	Password string
 	DB       int
+}
+
+type CacheConfig struct {
+	Enabled      bool
+	RetrievalTTL time.Duration
+	AnswerTTL    time.Duration
 }
 
 type S3Config struct {
@@ -46,12 +53,14 @@ type EmbeddingConfig struct {
 }
 
 type LLMConfig struct {
-	Provider      string
-	OpenAIKey     string
-	OpenAIBaseURL string
-	OpenAIModel   string
-	OllamaBaseURL string
-	OllamaModel   string
+	Provider        string
+	OpenAIKey       string
+	OpenAIBaseURL   string
+	OpenAIModel     string
+	OllamaBaseURL   string
+	OllamaModel     string
+	OllamaNumCtx    int
+	OllamaKeepAlive string
 }
 
 func Load() (Config, error) {
@@ -63,6 +72,14 @@ func Load() (Config, error) {
 	refreshTTL, err := parseDurationWithDefault("JWT_REFRESH_TTL", "720h")
 	if err != nil {
 		return Config{}, fmt.Errorf("parse JWT_REFRESH_TTL: %w", err)
+	}
+	retrievalTTL, err := parseDurationWithDefault("CACHE_RETRIEVAL_TTL", "10m")
+	if err != nil {
+		return Config{}, fmt.Errorf("parse CACHE_RETRIEVAL_TTL: %w", err)
+	}
+	answerTTL, err := parseDurationWithDefault("CACHE_ANSWER_TTL", "10m")
+	if err != nil {
+		return Config{}, fmt.Errorf("parse CACHE_ANSWER_TTL: %w", err)
 	}
 
 	cfg := Config{
@@ -76,6 +93,11 @@ func Load() (Config, error) {
 			Addr:     envOrDefault("REDIS_ADDR", "redis:6379"),
 			Password: envOrDefault("REDIS_PASSWORD", ""),
 			DB:       parseIntWithDefault("REDIS_DB", 0),
+		},
+		Cache: CacheConfig{
+			Enabled:      parseBoolWithDefault("CACHE_ENABLED", true),
+			RetrievalTTL: retrievalTTL,
+			AnswerTTL:    answerTTL,
 		},
 		S3: S3Config{
 			Endpoint:  envOrDefault("S3_ENDPOINT", "minio:9000"),
@@ -94,12 +116,14 @@ func Load() (Config, error) {
 			OllamaModel:   envOrDefault("EMBED_MODEL_OLLAMA", "nomic-embed-text"),
 		},
 		LLM: LLMConfig{
-			Provider:      envOrDefault("LLM_PROVIDER", "local"),
-			OpenAIKey:     envOrDefault("OPENAI_API_KEY", ""),
-			OpenAIBaseURL: envOrDefault("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-			OpenAIModel:   envOrDefault("LLM_MODEL_OPENAI", "gpt-4o-mini"),
-			OllamaBaseURL: envOrDefault("OLLAMA_BASE_URL", "http://ollama:11434"),
-			OllamaModel:   envOrDefault("LLM_MODEL_OLLAMA", "llama3.2"),
+			Provider:        envOrDefault("LLM_PROVIDER", "local"),
+			OpenAIKey:       envOrDefault("OPENAI_API_KEY", ""),
+			OpenAIBaseURL:   envOrDefault("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+			OpenAIModel:     envOrDefault("LLM_MODEL_OPENAI", "gpt-4o-mini"),
+			OllamaBaseURL:   envOrDefault("OLLAMA_BASE_URL", "http://ollama:11434"),
+			OllamaModel:     envOrDefault("LLM_MODEL_OLLAMA", "llama3.2"),
+			OllamaNumCtx:    parseIntWithDefault("LLM_OLLAMA_NUM_CTX", 4096),
+			OllamaKeepAlive: envOrDefault("LLM_OLLAMA_KEEP_ALIVE", ""),
 		},
 	}
 

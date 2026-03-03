@@ -66,41 +66,41 @@
 - [x] Сохранение default режима: `PATCH /me/settings { default_mode }`.
 - [x] Сервер фиксирует mode на старте запроса (per-request) и сохраняет в `messages.mode`.
 - [ ] Strict:
-  - [ ] Запрет web-search/tool вызовов.
+  - [x] Запрет web-search/tool вызовов.
   - [ ] Ответ только на основе retrieved chunks.
   - [x] Требовать structured output: `answer + citations[]`.
   - [x] Если данных нет/слабые → “Недостаточно данных в базе знаний” (без додумывания).
-  - [ ] Server-side guard: если citations невалидны → 1 retry → fallback.
+  - [x] Server-side guard: если citations невалидны → 1 retry → fallback.
 - [ ] Unstrict:
   - [ ] Может отвечать общими знаниями.
   - [ ] RBAC на внутренние чанки сохраняется.
   - [ ] Web-search модуль (опционально, feature-flag).
-- [ ] **Критерий готовности:** переключение в UI не влияет на in-flight стрим, влияет только на следующий запрос.
+- [x] **Критерий готовности:** переключение в UI не влияет на in-flight стрим, влияет только на следующий запрос.
 
 ## Milestone 6 — LLM Provider layer (сменность провайдера)
 - [ ] Интерфейс `LLMProvider` (stream + non-stream).
-- [ ] Реализации: `openai`, `ollama`.
-- [ ] Конфиг выбора провайдера: `LLM_PROVIDER`, `EMBED_PROVIDER`.
+- [x] Реализации: `openai`, `ollama`.
+- [x] Конфиг выбора провайдера: `LLM_PROVIDER`, `EMBED_PROVIDER`.
 - [ ] Настроить timeouts, retries, backoff, лимиты контекста.
-- [ ] **Критерий готовности:** можно переключить провайдера env-переменной без изменений кода приложения.
+- [x] **Критерий готовности:** можно переключить провайдера env-переменной без изменений кода приложения.
 
 ## Milestone 7 — Chat UI (AI-like) + streaming
 - [x] Схема БД: `chats`, `messages`.
-- [ ] API чатов: list/create/get/delete.
-- [ ] API сообщений: `POST /chats/:id/messages/stream` (SSE).
+- [x] API чатов: list/create/get/delete.
+- [x] API сообщений: `POST /chats/:id/messages/stream` (SSE).
 - [ ] UI `/chat`:
-  - [ ] Sidebar список чатов + “New chat”.
-  - [ ] Streaming ответа (“typing”).
-  - [ ] Отображение режима (strict/unstrict) на сообщениях ассистента.
-  - [ ] Отображение citations (кликабельные) + preview chunk/doc.
-- [ ] **Критерий готовности:** можно создать чат, задать вопрос, увидеть стрим + citations (в strict при наличии данных).
+  - [x] Sidebar список чатов + “New chat”.
+  - [x] Streaming ответа (“typing”).
+  - [x] Отображение режима (strict/unstrict) на сообщениях ассистента.
+  - [x] Отображение citations (кликабельные) + preview chunk/doc.
+- [x] **Критерий готовности:** можно создать чат, задать вопрос, увидеть стрим + citations (в strict при наличии данных).
 
 ## Milestone 8 — Кэширование (Redis) + производительность
-- [ ] Кэш retrieval: ключ включает `org_id`, `role_id`, `mode`, `normalized_query`, `kb_version`.
+- [x] Кэш retrieval: ключ включает `org_id`, `role_id`, `mode`, `normalized_query`, `kb_version`.
 - [ ] Кэш answer:
-  - [ ] strict: кэшировать ответ + citations.
+  - [x] strict: кэшировать ответ + citations.
   - [ ] unstrict: опционально (в MVP можно включить, но осторожно с web-search).
-- [ ] Pre-warm/часто выбираемые документы: статистика top docs (минимум счетчики).
+- [x] Pre-warm/часто выбираемые документы: статистика top docs (минимум счетчики).
 - [ ] **Критерий готовности:** повторный вопрос отвечает быстрее за счет кэша, без нарушения RBAC.
 
 ## Milestone 9 — Admin: роли/доступы (Owner UI)

@@ -14,34 +14,56 @@ import (
 type ollamaProvider struct {
 	baseURL    string
 	model      string
+	numCtx     int
+	keepAlive  string
 	httpClient *http.Client
 }
 
 type ollamaCompletionRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Stream      bool      `json:"stream"`
-	Temperature float64   `json:"temperature,omitempty"`
+	Model       string         `json:"model"`
+	Messages    []Message      `json:"messages"`
+	Stream      bool           `json:"stream"`
+	Think       *bool          `json:"think,omitempty"`
+	Temperature float64        `json:"temperature,omitempty"`
+	Options     map[string]any `json:"options,omitempty"`
+	KeepAlive   string         `json:"keep_alive,omitempty"`
 }
 
 type ollamaCompletionResponse struct {
 	Message Message `json:"message"`
 }
 
-func newOllamaProvider(baseURL, model string) *ollamaProvider {
+func newOllamaProvider(baseURL, model string, numCtx int, keepAlive string) *ollamaProvider {
 	return &ollamaProvider{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		model:      model,
-		httpClient: &http.Client{Timeout: 60 * time.Second},
+		numCtx:     numCtx,
+		keepAlive:  strings.TrimSpace(keepAlive),
+		httpClient: &http.Client{Timeout: 180 * time.Second},
 	}
 }
 
 func (p *ollamaProvider) Complete(ctx context.Context, request CompletionRequest) (string, error) {
+	think := false
+	options := map[string]any{}
+	if request.MaxTokens > 0 {
+		options["num_predict"] = request.MaxTokens
+	}
+	if p.numCtx > 0 {
+		options["num_ctx"] = p.numCtx
+	}
+	if len(options) == 0 {
+		options = nil
+	}
+
 	body, err := json.Marshal(ollamaCompletionRequest{
 		Model:       p.model,
 		Messages:    request.Messages,
 		Stream:      false,
+		Think:       &think,
 		Temperature: request.Temperature,
+		Options:     options,
+		KeepAlive:   p.keepAlive,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal ollama completion request: %w", err)

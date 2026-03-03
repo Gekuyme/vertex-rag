@@ -20,6 +20,7 @@ const (
 	PermissionManageRoles     = "can_manage_roles"
 	PermissionManageDocs      = "can_manage_documents"
 	PermissionToggleWebSearch = "can_toggle_web_search"
+	PermissionUseUnstrict     = "can_use_unstrict"
 )
 
 type Store struct {
@@ -68,6 +69,23 @@ func (s *Store) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)
 }
 
+func (s *Store) GetOrganizationKBVersion(ctx context.Context, orgID string) (int64, error) {
+	var kbVersion int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT kb_version
+		FROM organizations
+		WHERE id = $1
+	`, orgID).Scan(&kbVersion)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, fmt.Errorf("get organization kb_version: %w", err)
+	}
+
+	return kbVersion, nil
+}
+
 func (s *Store) CreateOrganizationWithOwner(ctx context.Context, orgName, email, passwordHash string) (User, error) {
 	orgName = strings.TrimSpace(orgName)
 	email = strings.ToLower(strings.TrimSpace(email))
@@ -106,6 +124,7 @@ func (s *Store) CreateOrganizationWithOwner(ctx context.Context, orgName, email,
 				PermissionManageRoles,
 				PermissionManageDocs,
 				PermissionToggleWebSearch,
+				PermissionUseUnstrict,
 			},
 		},
 		{
@@ -117,6 +136,7 @@ func (s *Store) CreateOrganizationWithOwner(ctx context.Context, orgName, email,
 				PermissionManageRoles,
 				PermissionManageDocs,
 				PermissionToggleWebSearch,
+				PermissionUseUnstrict,
 			},
 		},
 		{

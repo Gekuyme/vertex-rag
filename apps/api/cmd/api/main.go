@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/auth"
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/cache"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/config"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/embeddings"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/httpserver"
@@ -52,6 +53,12 @@ func main() {
 			log.Printf("close queue client: %v", err)
 		}
 	}()
+	cacheClient := cache.NewClient(cfg.Redis, cfg.Cache)
+	defer func() {
+		if err := cacheClient.Close(); err != nil {
+			log.Printf("close cache client: %v", err)
+		}
+	}()
 
 	embeddingProvider, err := embeddings.NewProvider(cfg.Embeddings)
 	if err != nil {
@@ -68,6 +75,7 @@ func main() {
 		tokenManager,
 		storageClient,
 		queueClient,
+		cacheClient,
 		embeddingProvider,
 		llmProvider,
 		cfg.CORSOrigin,

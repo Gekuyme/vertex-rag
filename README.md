@@ -27,7 +27,7 @@ cp .env.example .env
 2. Start local services:
 
 ```bash
-docker compose -f deploy/compose/docker-compose.yml up --build
+docker compose --env-file .env -f deploy/compose/docker-compose.yml up --build
 ```
 
 3. Apply database migrations:
@@ -63,6 +63,27 @@ API and worker support `EMBED_PROVIDER=local|openai|ollama`:
 - `openai` - set `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, and `EMBED_MODEL_OPENAI`.
 - `ollama` - set `OLLAMA_BASE_URL` and `EMBED_MODEL_OLLAMA` (use compose `local-llm` profile if needed).
 
+## LLM providers
+
+API supports `LLM_PROVIDER=local|openai|ollama`:
+
+- `local` - deterministic fallback for local development.
+- `openai` - set `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, and `LLM_MODEL_OPENAI`.
+- `ollama` - set `OLLAMA_BASE_URL` and `LLM_MODEL_OLLAMA`.
+  - If Ollama runs on host machine (outside compose), use `OLLAMA_BASE_URL=http://host.docker.internal:11434`.
+  - If Ollama runs as compose service (`--profile local-llm`), use `OLLAMA_BASE_URL=http://ollama:11434`.
+  - Optional tuning: `LLM_OLLAMA_NUM_CTX` (default `4096`) and `LLM_OLLAMA_KEEP_ALIVE` (default `30m`).
+
+## Redis cache (RAG)
+
+API supports Redis cache for retrieval and strict answers:
+
+- `CACHE_ENABLED=true|false`
+- `CACHE_RETRIEVAL_TTL` (default `10m`)
+- `CACHE_ANSWER_TTL` (default `10m`)
+
+Cache keys include `org_id`, `role_id`, `mode`, normalized query hash, and `kb_version`.
+
 ## Implemented API endpoints (current)
 
 - `POST /auth/register_owner`
@@ -75,12 +96,16 @@ API and worker support `EMBED_PROVIDER=local|openai|ollama`:
 - `GET /roles`
 - `GET /chats`
 - `POST /chats`
+- `GET /chats/{id}`
+- `DELETE /chats/{id}`
 - `GET /chats/{id}/messages`
 - `POST /chats/{id}/messages`
+- `POST /chats/{id}/messages/stream`
 - `GET /admin/roles`
 - `POST /admin/roles`
 - `GET /admin/users`
 - `PATCH /admin/users/{id}/role`
 - `POST /admin/retrieval/debug`
+- `GET /admin/stats/top-docs`
 - `GET /documents`
 - `POST /documents/upload`
