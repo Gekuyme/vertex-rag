@@ -26,7 +26,11 @@ services:
       EMBED_PROVIDER: ${EMBED_PROVIDER:-local}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      LLM_MODEL_OPENAI: ${LLM_MODEL_OPENAI:-gpt-4o-mini}
+      EMBED_MODEL_OPENAI: ${EMBED_MODEL_OPENAI:-text-embedding-3-small}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      LLM_MODEL_OLLAMA: ${LLM_MODEL_OLLAMA:-llama3.2}
+      EMBED_MODEL_OLLAMA: ${EMBED_MODEL_OLLAMA:-nomic-embed-text}
       WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-false}
     depends_on:
       - postgres

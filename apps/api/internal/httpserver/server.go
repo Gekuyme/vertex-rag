@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/auth"
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/embeddings"
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/llm"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/queue"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/storage"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/store"
@@ -27,15 +29,28 @@ type Server struct {
 	auth       *auth.Manager
 	storage    *storage.Client
 	queue      *queue.Client
+	embeddings embeddings.Provider
+	llm        llm.Provider
 	corsOrigin string
 }
 
-func New(addr string, dbStore *store.Store, tokenManager *auth.Manager, storageClient *storage.Client, queueClient *queue.Client, corsOrigin string) *Server {
+func New(
+	addr string,
+	dbStore *store.Store,
+	tokenManager *auth.Manager,
+	storageClient *storage.Client,
+	queueClient *queue.Client,
+	embeddingProvider embeddings.Provider,
+	llmProvider llm.Provider,
+	corsOrigin string,
+) *Server {
 	apiServer := &Server{
 		store:      dbStore,
 		auth:       tokenManager,
 		storage:    storageClient,
 		queue:      queueClient,
+		embeddings: embeddingProvider,
+		llm:        llmProvider,
 		corsOrigin: corsOrigin,
 	}
 
@@ -50,7 +65,13 @@ func New(addr string, dbStore *store.Store, tokenManager *auth.Manager, storageC
 	mux.HandleFunc("POST /auth/logout", apiServer.logout)
 
 	mux.Handle("GET /me", chain(http.HandlerFunc(apiServer.me), authMW))
+	mux.Handle("GET /me/settings", chain(http.HandlerFunc(apiServer.getMySettings), authMW))
+	mux.Handle("PATCH /me/settings", chain(http.HandlerFunc(apiServer.updateMySettings), authMW))
 	mux.Handle("GET /roles", chain(http.HandlerFunc(apiServer.roles), authMW))
+	mux.Handle("GET /chats", chain(http.HandlerFunc(apiServer.listChats), authMW))
+	mux.Handle("POST /chats", chain(http.HandlerFunc(apiServer.createChat), authMW))
+	mux.Handle("GET /chats/{id}/messages", chain(http.HandlerFunc(apiServer.listChatMessages), authMW))
+	mux.Handle("POST /chats/{id}/messages", chain(http.HandlerFunc(apiServer.createChatMessage), authMW))
 
 	mux.Handle("GET /admin/roles", chain(
 		http.HandlerFunc(apiServer.listRoles),
@@ -81,12 +102,19 @@ func New(addr string, dbStore *store.Store, tokenManager *auth.Manager, storageC
 		authMW,
 		requirePermission(store.PermissionUploadDocs),
 	))
+	mux.Handle("POST /admin/retrieval/debug", chain(
+		http.HandlerFunc(apiServer.debugRetrieval),
+		authMW,
+		requirePermission(store.PermissionManageDocs),
+	))
 
 	return &Server{
 		store:      dbStore,
 		auth:       tokenManager,
 		storage:    storageClient,
 		queue:      queueClient,
+		embeddings: embeddingProvider,
+		llm:        llmProvider,
 		corsOrigin: corsOrigin,
 		httpServer: &http.Server{
 			Addr:              addr,
@@ -133,6 +161,41 @@ type createRoleRequest struct {
 
 type updateUserRoleRequest struct {
 	RoleID int64 `json:"role_id"`
+}
+
+type updateMySettingsRequest struct {
+	DefaultMode string `json:"default_mode"`
+}
+
+type createChatRequest struct {
+	Title string `json:"title"`
+}
+
+type createChatMessageRequest struct {
+	Content    string `json:"content"`
+	Mode       string `json:"mode"`
+	TopK       int    `json:"top_k"`
+	CandidateK int    `json:"candidate_k"`
+}
+
+type retrievalDebugRequest struct {
+	Query      string `json:"query"`
+	TopK       int    `json:"top_k"`
+	CandidateK int    `json:"candidate_k"`
+}
+
+type retrievalCitation struct {
+	ChunkID     string         `json:"chunk_id"`
+	DocumentID  string         `json:"document_id"`
+	DocTitle    string         `json:"doc_title"`
+	DocFilename string         `json:"doc_filename"`
+	Snippet     string         `json:"snippet"`
+	Page        *int           `json:"page,omitempty"`
+	Section     string         `json:"section,omitempty"`
+	VectorScore float64        `json:"vector_score"`
+	TextScore   float64        `json:"text_score"`
+	Score       float64        `json:"score"`
+	Metadata    map[string]any `json:"metadata"`
 }
 
 type authResponse struct {
@@ -294,6 +357,50 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, user)
 }
 
+func (s *Server) getMySettings(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	settings, err := s.store.GetUserSettings(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load settings")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) updateMySettings(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+
+	var payload updateMySettingsRequest
+	if err := decodeJSONBody(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	mode := strings.ToLower(strings.TrimSpace(payload.DefaultMode))
+	if mode == "" {
+		writeError(w, http.StatusBadRequest, "default_mode is required")
+		return
+	}
+	if err := store.ValidateMode(mode); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if mode == store.ModeUnstrict && !hasPermission(user.Permissions, store.PermissionToggleWebSearch) {
+		writeError(w, http.StatusForbidden, "unstrict mode is not allowed for this role")
+		return
+	}
+
+	settings, err := s.store.UpsertUserSettings(r.Context(), user.ID, mode)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update settings")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, settings)
+}
+
 func (s *Server) roles(w http.ResponseWriter, r *http.Request) {
 	user, _ := currentUser(r.Context())
 	roles, err := s.store.ListRoles(r.Context(), user.OrgID)
@@ -443,6 +550,281 @@ func (s *Server) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, document)
 }
 
+func (s *Server) debugRetrieval(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+
+	var payload retrievalDebugRequest
+	if err := decodeJSONBody(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	query := strings.TrimSpace(payload.Query)
+	if query == "" {
+		writeError(w, http.StatusBadRequest, "query is required")
+		return
+	}
+	topK, candidateK := normalizeRetrievalLimits(payload.TopK, payload.CandidateK)
+
+	vectors, err := s.embeddings.Embed(r.Context(), []string{query})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to embed query: %v", err))
+		return
+	}
+	if len(vectors) != 1 {
+		writeError(w, http.StatusInternalServerError, "embedding provider returned unexpected result")
+		return
+	}
+
+	results, err := s.store.RetrieveChunks(r.Context(), store.RetrievalOptions{
+		OrgID:          user.OrgID,
+		RoleID:         user.RoleID,
+		Query:          query,
+		QueryEmbedding: vectors[0],
+		TopK:           topK,
+		CandidateK:     candidateK,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to retrieve chunks: %v", err))
+		return
+	}
+
+	citations := make([]retrievalCitation, 0, len(results))
+	for _, result := range results {
+		citations = append(citations, retrievalCitation{
+			ChunkID:     result.ChunkID,
+			DocumentID:  result.DocumentID,
+			DocTitle:    result.DocTitle,
+			DocFilename: result.DocFilename,
+			Snippet:     truncateSnippet(result.Content, 320),
+			Page:        metadataInt(result.Metadata, "page"),
+			Section:     metadataString(result.Metadata, "section"),
+			VectorScore: result.VectorScore,
+			TextScore:   result.TextScore,
+			Score:       result.Score,
+			Metadata:    result.Metadata,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"query":       query,
+		"top_k":       topK,
+		"candidate_k": candidateK,
+		"citations":   citations,
+		"llm_context": buildLLMContext(results, 5000),
+	})
+}
+
+func (s *Server) listChats(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	chats, err := s.store.ListChats(r.Context(), user.OrgID, user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list chats")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string][]store.Chat{"chats": chats})
+}
+
+func (s *Server) createChat(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+
+	var payload createChatRequest
+	if err := decodeJSONBody(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	chat, err := s.store.CreateChat(r.Context(), user.OrgID, user.ID, payload.Title)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create chat")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, chat)
+}
+
+func (s *Server) listChatMessages(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	chatID := strings.TrimSpace(r.PathValue("id"))
+	if chatID == "" {
+		writeError(w, http.StatusBadRequest, "chat id is required")
+		return
+	}
+
+	chat, err := s.store.GetChat(r.Context(), user.OrgID, chatID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "chat not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load chat")
+		return
+	}
+	if chat.CreatedBy != user.ID {
+		writeError(w, http.StatusForbidden, "chat does not belong to current user")
+		return
+	}
+
+	messages, err := s.store.ListChatMessages(r.Context(), user.OrgID, chatID, 300)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list messages")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"chat":     chat,
+		"messages": messages,
+	})
+}
+
+func (s *Server) createChatMessage(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	chatID := strings.TrimSpace(r.PathValue("id"))
+	if chatID == "" {
+		writeError(w, http.StatusBadRequest, "chat id is required")
+		return
+	}
+
+	chat, err := s.store.GetChat(r.Context(), user.OrgID, chatID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "chat not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load chat")
+		return
+	}
+	if chat.CreatedBy != user.ID {
+		writeError(w, http.StatusForbidden, "chat does not belong to current user")
+		return
+	}
+
+	var payload createChatMessageRequest
+	if err := decodeJSONBody(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	query := strings.TrimSpace(payload.Content)
+	if query == "" {
+		writeError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+
+	mode, err := s.resolveMode(r.Context(), user, payload.Mode)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if mode == store.ModeUnstrict && !hasPermission(user.Permissions, store.PermissionToggleWebSearch) {
+		writeError(w, http.StatusForbidden, "unstrict mode is not allowed for this role")
+		return
+	}
+
+	userID := user.ID
+	userMessage, err := s.store.CreateMessage(r.Context(), store.CreateMessageParams{
+		ChatID:    chatID,
+		OrgID:     user.OrgID,
+		UserID:    &userID,
+		Role:      "user",
+		Mode:      mode,
+		Content:   query,
+		Citations: []retrievalCitation{},
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist user message")
+		return
+	}
+
+	topK, candidateK := normalizeRetrievalLimits(payload.TopK, payload.CandidateK)
+	vectors, err := s.embeddings.Embed(r.Context(), []string{query})
+	if err != nil || len(vectors) != 1 {
+		writeError(w, http.StatusBadRequest, "failed to embed query")
+		return
+	}
+
+	retrieved, err := s.store.RetrieveChunks(r.Context(), store.RetrievalOptions{
+		OrgID:          user.OrgID,
+		RoleID:         user.RoleID,
+		Query:          query,
+		QueryEmbedding: vectors[0],
+		TopK:           topK,
+		CandidateK:     candidateK,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to retrieve context")
+		return
+	}
+
+	citations := make([]retrievalCitation, 0, len(retrieved))
+	for _, result := range retrieved {
+		citations = append(citations, retrievalCitation{
+			ChunkID:     result.ChunkID,
+			DocumentID:  result.DocumentID,
+			DocTitle:    result.DocTitle,
+			DocFilename: result.DocFilename,
+			Snippet:     truncateSnippet(result.Content, 320),
+			Page:        metadataInt(result.Metadata, "page"),
+			Section:     metadataString(result.Metadata, "section"),
+			VectorScore: result.VectorScore,
+			TextScore:   result.TextScore,
+			Score:       result.Score,
+			Metadata:    result.Metadata,
+		})
+	}
+
+	answer := s.buildFallbackAnswer(mode, retrieved)
+	if !(mode == store.ModeStrict && len(retrieved) == 0) {
+		contextText := buildLLMContext(retrieved, 7000)
+		completion, completionErr := s.llm.Complete(r.Context(), llm.CompletionRequest{
+			Messages: []llm.Message{
+				{
+					Role:    "system",
+					Content: s.systemPromptForMode(mode),
+				},
+				{
+					Role: "user",
+					Content: fmt.Sprintf(
+						"Вопрос пользователя:\n%s\n\nКонтекст:\n%s",
+						query,
+						contextText,
+					),
+				},
+			},
+			MaxTokens:   900,
+			Temperature: s.temperatureForMode(mode),
+		})
+		if completionErr == nil && strings.TrimSpace(completion) != "" {
+			answer = strings.TrimSpace(completion)
+		} else if mode == store.ModeUnstrict {
+			writeError(w, http.StatusBadGateway, "failed to generate assistant response")
+			return
+		}
+	}
+
+	assistantMessage, err := s.store.CreateMessage(r.Context(), store.CreateMessageParams{
+		ChatID:    chatID,
+		OrgID:     user.OrgID,
+		UserID:    nil,
+		Role:      "assistant",
+		Mode:      mode,
+		Content:   answer,
+		Citations: citations,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist assistant message")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mode":              mode,
+		"user_message":      userMessage,
+		"assistant_message": assistantMessage,
+		"citations":         citations,
+	})
+}
+
 func decodeJSONBody(r *http.Request, dst interface{}) error {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
@@ -496,6 +878,158 @@ func normalizeContentType(fileHeader *multipart.FileHeader) string {
 		return "application/octet-stream"
 	}
 	return contentType
+}
+
+func truncateSnippet(content string, maxRunes int) string {
+	normalized := strings.TrimSpace(content)
+	if normalized == "" {
+		return ""
+	}
+
+	runes := []rune(normalized)
+	if len(runes) <= maxRunes {
+		return normalized
+	}
+
+	return string(runes[:maxRunes]) + "…"
+}
+
+func metadataInt(metadata map[string]any, key string) *int {
+	rawValue, ok := metadata[key]
+	if !ok {
+		return nil
+	}
+
+	switch value := rawValue.(type) {
+	case float64:
+		converted := int(value)
+		return &converted
+	case int:
+		converted := value
+		return &converted
+	default:
+		return nil
+	}
+}
+
+func metadataString(metadata map[string]any, key string) string {
+	rawValue, ok := metadata[key]
+	if !ok {
+		return ""
+	}
+
+	value, ok := rawValue.(string)
+	if !ok {
+		return ""
+	}
+
+	return strings.TrimSpace(value)
+}
+
+func buildLLMContext(chunks []store.RetrievalChunk, maxChars int) string {
+	if len(chunks) == 0 || maxChars <= 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+	for index, chunk := range chunks {
+		header := fmt.Sprintf(
+			"[%d] %s (%s) chunk:%d\n",
+			index+1,
+			chunk.DocTitle,
+			chunk.DocFilename,
+			chunk.ChunkIndex,
+		)
+		content := strings.TrimSpace(chunk.Content) + "\n\n"
+
+		if builder.Len()+len(header)+len(content) > maxChars {
+			break
+		}
+
+		builder.WriteString(header)
+		builder.WriteString(content)
+	}
+
+	return strings.TrimSpace(builder.String())
+}
+
+func normalizeRetrievalLimits(topK, candidateK int) (int, int) {
+	if topK <= 0 {
+		topK = 8
+	}
+	if topK > 30 {
+		topK = 30
+	}
+
+	if candidateK <= 0 {
+		candidateK = 32
+	}
+	if candidateK < topK {
+		candidateK = topK
+	}
+	if candidateK > 100 {
+		candidateK = 100
+	}
+
+	return topK, candidateK
+}
+
+func (s *Server) resolveMode(ctx context.Context, user store.User, requestedMode string) (string, error) {
+	if strings.TrimSpace(requestedMode) != "" {
+		mode := strings.ToLower(strings.TrimSpace(requestedMode))
+		if err := store.ValidateMode(mode); err != nil {
+			return "", err
+		}
+		return mode, nil
+	}
+
+	settings, err := s.store.GetUserSettings(ctx, user.ID)
+	if err != nil {
+		return "", fmt.Errorf("load user settings: %w", err)
+	}
+	if err := store.ValidateMode(settings.DefaultMode); err != nil {
+		return "", err
+	}
+
+	return settings.DefaultMode, nil
+}
+
+func (s *Server) systemPromptForMode(mode string) string {
+	if mode == store.ModeStrict {
+		return "Ты корпоративный ассистент. Отвечай только на основе переданного контекста компании. Если контекста недостаточно, ответь дословно: \"Недостаточно данных в базе знаний.\" Не выдумывай факты."
+	}
+
+	return "Ты корпоративный ассистент. Используй контекст компании как приоритетный источник. Если контекст неполный, можешь дополнять общими знаниями и явно разделяй факты из контекста и общие рекомендации."
+}
+
+func (s *Server) temperatureForMode(mode string) float64 {
+	if mode == store.ModeStrict {
+		return 0.1
+	}
+	return 0.3
+}
+
+func (s *Server) buildFallbackAnswer(mode string, chunks []store.RetrievalChunk) string {
+	if mode == store.ModeStrict && len(chunks) == 0 {
+		return "Недостаточно данных в базе знаний."
+	}
+	if len(chunks) == 0 {
+		return "Нет релевантных фрагментов базы знаний. Задайте вопрос точнее или загрузите документы."
+	}
+
+	snippets := make([]string, 0, minInt(2, len(chunks)))
+	for index := 0; index < len(chunks) && index < 2; index++ {
+		snippets = append(snippets, truncateSnippet(chunks[index].Content, 240))
+	}
+
+	return "Нашел релевантные фрагменты в базе знаний:\n- " + strings.Join(snippets, "\n- ")
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, payload interface{}) {

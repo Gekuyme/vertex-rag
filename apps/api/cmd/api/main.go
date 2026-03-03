@@ -12,7 +12,9 @@ import (
 
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/auth"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/config"
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/embeddings"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/httpserver"
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/llm"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/queue"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/storage"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/store"
@@ -51,7 +53,25 @@ func main() {
 		}
 	}()
 
-	server := httpserver.New(cfg.APIAddr, dbStore, tokenManager, storageClient, queueClient, cfg.CORSOrigin)
+	embeddingProvider, err := embeddings.NewProvider(cfg.Embeddings)
+	if err != nil {
+		log.Fatalf("init embeddings provider: %v", err)
+	}
+	llmProvider, err := llm.NewProvider(cfg.LLM)
+	if err != nil {
+		log.Fatalf("init llm provider: %v", err)
+	}
+
+	server := httpserver.New(
+		cfg.APIAddr,
+		dbStore,
+		tokenManager,
+		storageClient,
+		queueClient,
+		embeddingProvider,
+		llmProvider,
+		cfg.CORSOrigin,
+	)
 
 	errCh := make(chan error, 1)
 	go func() {
