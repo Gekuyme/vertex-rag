@@ -46,6 +46,7 @@ type RequestOptions = {
 
 export default function HomePage() {
   const [mode, setMode] = useState<"login" | "register">("login");
+  const [consoleTab, setConsoleTab] = useState<"knowledge" | "users" | "account">("account");
   const [token, setToken] = useState<string>("");
   const [user, setUser] = useState<User | null>(null);
   const [roles, setRoles] = useState<Role[]>([]);
@@ -72,6 +73,16 @@ export default function HomePage() {
     [user]
   );
 
+  function defaultTabForUser(profile: User): "knowledge" | "users" | "account" {
+    if (profile.permissions.includes("can_upload_docs")) {
+      return "knowledge";
+    }
+    if (profile.permissions.includes("can_manage_users")) {
+      return "users";
+    }
+    return "account";
+  }
+
   useEffect(() => {
     const storedToken = window.localStorage.getItem(accessTokenStorageKey);
     if (!storedToken) {
@@ -86,6 +97,7 @@ export default function HomePage() {
     try {
       const profile = await apiRequest<User>("/me", { token: accessToken });
       setUser(profile);
+      setConsoleTab(defaultTabForUser(profile));
       await loadWorkspace(accessToken, profile);
       setMessage(`Signed in as ${profile.email}`);
       setError("");
@@ -95,6 +107,7 @@ export default function HomePage() {
         const refreshed = await apiRequest<AuthResponse>("/auth/refresh", { method: "POST" });
         persistAccessToken(refreshed.access_token);
         setUser(refreshed.user);
+        setConsoleTab(defaultTabForUser(refreshed.user));
         await loadWorkspace(refreshed.access_token, refreshed.user);
         setMessage(`Session restored for ${refreshed.user.email}`);
         setError("");
@@ -159,6 +172,7 @@ export default function HomePage() {
 
       persistAccessToken(authResponse.access_token);
       setUser(authResponse.user);
+      setConsoleTab(defaultTabForUser(authResponse.user));
       await loadWorkspace(authResponse.access_token, authResponse.user);
       setMessage(
         mode === "register"
@@ -275,6 +289,7 @@ export default function HomePage() {
     window.localStorage.removeItem(accessTokenStorageKey);
     setToken("");
     setUser(null);
+    setConsoleTab("account");
     setRoles([]);
     setUsers([]);
     setDocuments([]);
@@ -290,11 +305,9 @@ export default function HomePage() {
         <div className="headerRow">
           <div>
             <p className="eyebrow">Vertex RAG</p>
-            <h1>Owner and Admin Console</h1>
+            <h1>Console</h1>
           </div>
-          <p className="hint">
-            API: <code>{APIBaseURL}</code>
-          </p>
+          <p className="hint">Owner and Admin console</p>
         </div>
 
         {!user && (
@@ -351,7 +364,7 @@ export default function HomePage() {
                 />
               </label>
 
-              <button type="submit" disabled={isBusy}>
+              <button type="submit" className="btn btnPrimary" disabled={isBusy}>
                 {isBusy ? "Processing..." : mode === "register" ? "Create organization" : "Login"}
               </button>
             </form>
@@ -360,159 +373,253 @@ export default function HomePage() {
 
         {user && (
           <>
-            <div className="profileRow">
-              <div>
-                <p>
-                  <strong>User:</strong> {user.email}
-                </p>
-                <p>
-                  <strong>Role:</strong> {user.role_name}
-                </p>
-                <p>
-                  <strong>Organization:</strong> {user.org_id}
+            <div className="topBar">
+              <div className="topBarLeft">
+                <div className="chips" aria-label="Signed-in user">
+                  <span className="chip">{user.email}</span>
+                  <span className="chip">{user.role_name}</span>
+                  <span className="chip chipMono">{user.org_id}</span>
+                </div>
+                <p className="hint">
+                  API <code>{APIBaseURL}</code>
                 </p>
               </div>
-              <button type="button" onClick={onLogout} disabled={isBusy}>
-                Logout
+              <div className="topBarRight">
+                <button
+                  type="button"
+                  className="btn btnSecondary btnSmall"
+                  onClick={onLogout}
+                  disabled={isBusy}
+                >
+                  Logout
+                </button>
+              </div>
+            </div>
+
+            <div className="toggleRow" aria-label="Console navigation">
+              {canUploadDocs && (
+                <button
+                  type="button"
+                  className={`tabButton ${consoleTab === "knowledge" ? "active" : ""}`}
+                  onClick={() => setConsoleTab("knowledge")}
+                >
+                  Knowledge
+                </button>
+              )}
+              {canManageUsers && (
+                <button
+                  type="button"
+                  className={`tabButton ${consoleTab === "users" ? "active" : ""}`}
+                  onClick={() => setConsoleTab("users")}
+                >
+                  Users
+                </button>
+              )}
+              <button
+                type="button"
+                className={`tabButton ${consoleTab === "account" ? "active" : ""}`}
+                onClick={() => setConsoleTab("account")}
+              >
+                Account
               </button>
             </div>
 
-            {canUploadDocs && (
+            {consoleTab === "knowledge" && (
               <div className="adminPanel">
-                <h2>Knowledge Upload</h2>
-                <form className="formGrid" onSubmit={onUploadDocument}>
-                  <label>
-                    Title (optional)
-                    <input
-                      value={documentTitle}
-                      onChange={(event) => setDocumentTitle(event.target.value)}
-                      placeholder="Policy handbook"
-                    />
-                  </label>
+                {!canUploadDocs && <p className="notice">Current user has no knowledge upload permissions.</p>}
 
-                  <label>
-                    File
-                    <input
-                      type="file"
-                      onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
-                      required
-                    />
-                  </label>
+                {canUploadDocs && (
+                  <>
+                    <h2>Knowledge Upload</h2>
+                    <form className="formGrid" onSubmit={onUploadDocument}>
+                      <label>
+                        Title (optional)
+                        <input
+                          value={documentTitle}
+                          onChange={(event) => setDocumentTitle(event.target.value)}
+                          placeholder="Policy handbook"
+                        />
+                      </label>
 
-                  <fieldset>
-                    <legend>Allowed roles</legend>
-                    <div className="rolesGrid">
-                      {roles.map((role) => (
-                        <label key={role.id} className="roleCheck">
-                          <input
-                            type="checkbox"
-                            checked={selectedRoleIDs.includes(role.id)}
-                            onChange={() => toggleUploadRole(role.id)}
-                          />
-                          <span>{role.name}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </fieldset>
+                      <label>
+                        File
+                        <input
+                          type="file"
+                          onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
+                          required
+                        />
+                      </label>
 
-                  <button type="submit" disabled={isBusy}>
-                    {isBusy ? "Uploading..." : "Upload document"}
-                  </button>
-                </form>
+                      <fieldset>
+                        <legend>Allowed roles</legend>
+                        <div className="rolesGrid">
+                          {roles.map((role) => (
+                            <label key={role.id} className="roleCheck">
+                              <input
+                                type="checkbox"
+                                checked={selectedRoleIDs.includes(role.id)}
+                                onChange={() => toggleUploadRole(role.id)}
+                              />
+                              <span>{role.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </fieldset>
 
-                <h3>Uploaded documents</h3>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Title</th>
-                      <th>File</th>
-                      <th>Status</th>
-                      <th>Access roles</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {documents.map((entry) => (
-                      <tr key={entry.id}>
-                        <td>{entry.title}</td>
-                        <td>{entry.filename}</td>
-                        <td>{entry.status}</td>
-                        <td>{entry.allowed_role_ids.join(", ")}</td>
-                      </tr>
-                    ))}
-                    {documents.length === 0 && (
-                      <tr>
-                        <td colSpan={4}>No uploaded documents yet.</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                      <button type="submit" className="btn btnPrimary" disabled={isBusy}>
+                        {isBusy ? "Uploading..." : "Upload document"}
+                      </button>
+                    </form>
 
-            {canManageUsers && (
-              <div className="adminPanel">
-                <h2>Users and Roles</h2>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Email</th>
-                      <th>Role</th>
-                      <th>Status</th>
-                      <th>Assign</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {users.map((entry) => (
-                      <tr key={entry.id}>
-                        <td>{entry.email}</td>
-                        <td>{entry.role_name}</td>
-                        <td>{entry.status}</td>
-                        <td>
-                          <div className="assignRow">
-                            <select
-                              value={draftRoleByUser[entry.id] || entry.role_id}
-                              onChange={(event) =>
-                                setDraftRoleByUser((current) => ({
-                                  ...current,
-                                  [entry.id]: Number(event.target.value)
-                                }))
-                              }
-                            >
-                              {roles.map((role) => (
-                                <option value={role.id} key={role.id}>
-                                  {role.name}
-                                </option>
+                    <details className="details" open>
+                      <summary className="detailsSummary">
+                        Uploaded documents <span className="badge">{documents.length}</span>
+                      </summary>
+                      <div className="detailsBody">
+                        <div className="tableWrap">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Title</th>
+                                <th>File</th>
+                                <th>Status</th>
+                                <th>Access roles</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {documents.map((entry) => (
+                                <tr key={entry.id}>
+                                  <td>{entry.title}</td>
+                                  <td>{entry.filename}</td>
+                                  <td>{entry.status}</td>
+                                  <td>{entry.allowed_role_ids.join(", ")}</td>
+                                </tr>
                               ))}
-                            </select>
-                            <button
-                              type="button"
-                              onClick={() => void onChangeRole(entry.id)}
-                              disabled={isBusy}
-                            >
-                              Save
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                    {users.length === 0 && (
-                      <tr>
-                        <td colSpan={4}>No users found.</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
+                              {documents.length === 0 && (
+                                <tr>
+                                  <td colSpan={4}>No uploaded documents yet.</td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </details>
+                  </>
+                )}
               </div>
             )}
 
-            {!canUploadDocs && !canManageUsers && (
-              <p className="notice">Current user has no management permissions.</p>
+            {consoleTab === "users" && (
+              <div className="adminPanel">
+                {!canManageUsers && <p className="notice">Current user has no user management permissions.</p>}
+
+                {canManageUsers && (
+                  <>
+                    <h2>Users and Roles</h2>
+                    <details className="details" open>
+                      <summary className="detailsSummary">
+                        Users <span className="badge">{users.length}</span>
+                      </summary>
+                      <div className="detailsBody">
+                        <div className="tableWrap">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Email</th>
+                                <th>Role</th>
+                                <th>Status</th>
+                                <th>Assign</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {users.map((entry) => (
+                                <tr key={entry.id}>
+                                  <td>{entry.email}</td>
+                                  <td>{entry.role_name}</td>
+                                  <td>{entry.status}</td>
+                                  <td>
+                                    <div className="assignRow">
+                                      <select
+                                        value={draftRoleByUser[entry.id] || entry.role_id}
+                                        onChange={(event) =>
+                                          setDraftRoleByUser((current) => ({
+                                            ...current,
+                                            [entry.id]: Number(event.target.value)
+                                          }))
+                                        }
+                                      >
+                                        {roles.map((role) => (
+                                          <option value={role.id} key={role.id}>
+                                            {role.name}
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <button
+                                        type="button"
+                                        className="btn btnSmall"
+                                        onClick={() => void onChangeRole(entry.id)}
+                                        disabled={isBusy}
+                                      >
+                                        Save
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                              {users.length === 0 && (
+                                <tr>
+                                  <td colSpan={4}>No users found.</td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </details>
+                  </>
+                )}
+              </div>
+            )}
+
+            {consoleTab === "account" && (
+              <div className="adminPanel">
+                <h2>Account</h2>
+                <div className="accountGrid">
+                  <p>
+                    <strong>User</strong>
+                    <br />
+                    {user.email}
+                  </p>
+                  <p>
+                    <strong>Role</strong>
+                    <br />
+                    {user.role_name}
+                  </p>
+                  <p>
+                    <strong>Organization</strong>
+                    <br />
+                    {user.org_id}
+                  </p>
+                </div>
+                {!canUploadDocs && !canManageUsers && (
+                  <p className="notice">Current user has no management permissions.</p>
+                )}
+              </div>
             )}
           </>
         )}
 
-        {message && <p className="message success">{message}</p>}
-        {error && <p className="message error">{error}</p>}
+        {message && (
+          <p className="message success" role="status" aria-live="polite">
+            {message}
+          </p>
+        )}
+        {error && (
+          <p className="message error" role="alert" aria-live="polite">
+            {error}
+          </p>
+        )}
       </section>
     </main>
   );
@@ -564,4 +671,3 @@ function errorMessage(value: unknown): string {
 
   return "Unexpected request error";
 }
-
