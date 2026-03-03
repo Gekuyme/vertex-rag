@@ -1,8 +1,6 @@
 services:
   web:
-    build:
-      context: ../../apps/web
-      dockerfile: Dockerfile
+    image: ${VERTEX_WEB_IMAGE:-ghcr.io/vertex-rag/vertex-rag-web:latest}
     ports:
       - "3000:3000"
     environment:
@@ -11,9 +9,7 @@ services:
       - api
 
   api:
-    build:
-      context: ../../apps/api
-      dockerfile: Dockerfile
+    image: ${VERTEX_API_IMAGE:-ghcr.io/vertex-rag/vertex-rag-api:latest}
     ports:
       - "${API_PORT:-8080}:8080"
     environment:
@@ -30,13 +26,24 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       LLM_MODEL_OPENAI: ${LLM_MODEL_OPENAI:-gpt-4o-mini}
+      LLM_MODEL_OPENAI_STRICT: ${LLM_MODEL_OPENAI_STRICT:-}
+      LLM_MODEL_OPENAI_UNSTRICT: ${LLM_MODEL_OPENAI_UNSTRICT:-}
       EMBED_MODEL_OPENAI: ${EMBED_MODEL_OPENAI:-text-embedding-3-small}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      LLM_OLLAMA_BASE_URL: ${LLM_OLLAMA_BASE_URL:-}
+      LLM_OLLAMA_BASE_URL_STRICT: ${LLM_OLLAMA_BASE_URL_STRICT:-}
+      LLM_OLLAMA_BASE_URL_UNSTRICT: ${LLM_OLLAMA_BASE_URL_UNSTRICT:-}
       LLM_MODEL_OLLAMA: ${LLM_MODEL_OLLAMA:-llama3.2}
+      LLM_MODEL_OLLAMA_STRICT: ${LLM_MODEL_OLLAMA_STRICT:-}
+      LLM_MODEL_OLLAMA_UNSTRICT: ${LLM_MODEL_OLLAMA_UNSTRICT:-}
       LLM_OLLAMA_NUM_CTX: ${LLM_OLLAMA_NUM_CTX:-4096}
       LLM_OLLAMA_KEEP_ALIVE: ${LLM_OLLAMA_KEEP_ALIVE:-30m}
       EMBED_MODEL_OLLAMA: ${EMBED_MODEL_OLLAMA:-nomic-embed-text}
       WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-false}
+      SEARCH_API_PROVIDER: ${SEARCH_API_PROVIDER:-brave}
+      SEARCH_API_KEY: ${SEARCH_API_KEY:-}
+      SEARCH_MAX_RESULTS: ${SEARCH_MAX_RESULTS:-5}
+      SEARCH_HTTP_TIMEOUT: ${SEARCH_HTTP_TIMEOUT:-6s}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -45,9 +52,7 @@ services:
       - minio
 
   worker:
-    build:
-      context: ../../apps/worker
-      dockerfile: Dockerfile
+    image: ${VERTEX_WORKER_IMAGE:-ghcr.io/vertex-rag/vertex-rag-worker:latest}
     ports:
       - "${WORKER_PORT:-8082}:8082"
     environment:

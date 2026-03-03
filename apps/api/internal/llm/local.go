@@ -25,3 +25,17 @@ func (p *localProvider) Complete(_ context.Context, request CompletionRequest) (
 
 	return "Локальный режим ответа. Основано на контексте:\n\n" + last, nil
 }
+
+func (p *localProvider) StreamComplete(
+	ctx context.Context,
+	request CompletionRequest,
+	onDelta func(delta string),
+) (string, error) {
+	answer, err := p.Complete(ctx, request)
+	if err != nil {
+		return "", err
+	}
+
+	emitChunks(answer, 80, onDelta)
+	return answer, nil
+}

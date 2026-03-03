@@ -12,10 +12,14 @@ import (
 )
 
 type openAIProvider struct {
-	baseURL    string
-	apiKey     string
-	model      string
-	httpClient *http.Client
+	baseURL       string
+	apiKey        string
+	model         string
+	modelStrict   string
+	modelUnstrict string
+	httpClient    *http.Client
+	maxRetries    int
+	retryBackoff  time.Duration
 }
 
 type openAICompletionRequest struct {
@@ -31,18 +35,51 @@ type openAICompletionResponse struct {
 	} `json:"choices"`
 }
 
-func newOpenAIProvider(baseURL, apiKey, model string) *openAIProvider {
+func newOpenAIProvider(
+	baseURL,
+	apiKey,
+	model,
+	modelStrict,
+	modelUnstrict string,
+	httpTimeout time.Duration,
+	maxRetries int,
+	retryBackoff time.Duration,
+) *openAIProvider {
+	if httpTimeout <= 0 {
+		httpTimeout = 60 * time.Second
+	}
+	if retryBackoff <= 0 {
+		retryBackoff = 300 * time.Millisecond
+	}
+
 	return &openAIProvider{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		apiKey:     apiKey,
-		model:      model,
-		httpClient: &http.Client{Timeout: 60 * time.Second},
+		baseURL:       strings.TrimRight(baseURL, "/"),
+		apiKey:        apiKey,
+		model:         strings.TrimSpace(model),
+		modelStrict:   strings.TrimSpace(modelStrict),
+		modelUnstrict: strings.TrimSpace(modelUnstrict),
+		httpClient:    &http.Client{Timeout: httpTimeout},
+		maxRetries:    maxRetries,
+		retryBackoff:  retryBackoff,
 	}
 }
 
 func (p *openAIProvider) Complete(ctx context.Context, request CompletionRequest) (string, error) {
+	model := strings.TrimSpace(request.Model)
+	if model == "" {
+		switch strings.ToLower(strings.TrimSpace(request.Mode)) {
+		case "strict":
+			model = p.modelStrict
+		case "unstrict":
+			model = p.modelUnstrict
+		}
+	}
+	if model == "" {
+		model = p.model
+	}
+
 	body, err := json.Marshal(openAICompletionRequest{
-		Model:       p.model,
+		Model:       model,
 		Messages:    request.Messages,
 		MaxTokens:   request.MaxTokens,
 		Temperature: request.Temperature,
@@ -51,14 +88,20 @@ func (p *openAIProvider) Complete(ctx context.Context, request CompletionRequest
 		return "", fmt.Errorf("marshal openai completion request: %w", err)
 	}
 
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("create openai completion request: %w", err)
-	}
-	httpRequest.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpRequest.Header.Set("Content-Type", "application/json")
-
-	response, err := p.httpClient.Do(httpRequest)
+	response, err := retryRequest(ctx, p.maxRetries, p.retryBackoff, func() (*http.Response, error) {
+		httpRequest, createErr := http.NewRequestWithContext(
+			ctx,
+			http.MethodPost,
+			p.baseURL+"/chat/completions",
+			bytes.NewReader(body),
+		)
+		if createErr != nil {
+			return nil, fmt.Errorf("create openai completion request: %w", createErr)
+		}
+		httpRequest.Header.Set("Authorization", "Bearer "+p.apiKey)
+		httpRequest.Header.Set("Content-Type", "application/json")
+		return p.httpClient.Do(httpRequest)
+	})
 	if err != nil {
 		return "", fmt.Errorf("openai completion request failed: %w", err)
 	}
@@ -77,4 +120,18 @@ func (p *openAIProvider) Complete(ctx context.Context, request CompletionRequest
 	}
 
 	return strings.TrimSpace(parsed.Choices[0].Message.Content), nil
+}
+
+func (p *openAIProvider) StreamComplete(
+	ctx context.Context,
+	request CompletionRequest,
+	onDelta func(delta string),
+) (string, error) {
+	answer, err := p.Complete(ctx, request)
+	if err != nil {
+		return "", err
+	}
+
+	emitChunks(answer, 100, onDelta)
+	return answer, nil
 }

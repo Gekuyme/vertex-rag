@@ -12,7 +12,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound      = errors.New("not found")
+	ErrRoleAssigned  = errors.New("role has assigned users")
+	ErrDefaultRole   = errors.New("default role is immutable")
+	ErrInvalidRoleID = errors.New("invalid role id")
+)
 
 const (
 	PermissionUploadDocs      = "can_upload_docs"
@@ -22,6 +27,15 @@ const (
 	PermissionToggleWebSearch = "can_toggle_web_search"
 	PermissionUseUnstrict     = "can_use_unstrict"
 )
+
+var allowedPermissions = map[string]struct{}{
+	PermissionUploadDocs:      {},
+	PermissionManageUsers:     {},
+	PermissionManageRoles:     {},
+	PermissionManageDocs:      {},
+	PermissionToggleWebSearch: {},
+	PermissionUseUnstrict:     {},
+}
 
 type Store struct {
 	pool *pgxpool.Pool
@@ -337,8 +351,12 @@ func (s *Store) CreateRole(ctx context.Context, orgID, name string, permissions 
 	if name == "" {
 		return Role{}, errors.New("role name cannot be empty")
 	}
+	normalizedPermissions, err := normalizePermissions(permissions)
+	if err != nil {
+		return Role{}, err
+	}
 
-	permissionsJSON, err := json.Marshal(permissions)
+	permissionsJSON, err := json.Marshal(normalizedPermissions)
 	if err != nil {
 		return Role{}, fmt.Errorf("marshal permissions: %w", err)
 	}
@@ -366,6 +384,167 @@ func (s *Store) CreateRole(ctx context.Context, orgID, name string, permissions 
 	}
 
 	return role, nil
+}
+
+func (s *Store) UpdateRole(ctx context.Context, orgID string, roleID int64, name string, permissions []string) (Role, error) {
+	if roleID <= 0 {
+		return Role{}, ErrInvalidRoleID
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return Role{}, errors.New("role name cannot be empty")
+	}
+	normalizedPermissions, err := normalizePermissions(permissions)
+	if err != nil {
+		return Role{}, err
+	}
+	permissionsJSON, err := json.Marshal(normalizedPermissions)
+	if err != nil {
+		return Role{}, fmt.Errorf("marshal permissions: %w", err)
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return Role{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var isDefault bool
+	err = tx.QueryRow(ctx, `
+		SELECT is_default
+		FROM roles
+		WHERE id = $1
+		  AND org_id = $2
+	`, roleID, orgID).Scan(&isDefault)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Role{}, ErrNotFound
+		}
+		return Role{}, fmt.Errorf("load role for update: %w", err)
+	}
+	if isDefault {
+		return Role{}, ErrDefaultRole
+	}
+
+	var role Role
+	var encodedPermissions []byte
+	err = tx.QueryRow(ctx, `
+		UPDATE roles
+		SET name = $3, permissions = $4::jsonb
+		WHERE id = $1
+		  AND org_id = $2
+		RETURNING id, org_id, name, is_default, permissions::text, created_at
+	`, roleID, orgID, name, permissionsJSON).Scan(
+		&role.ID,
+		&role.OrgID,
+		&role.Name,
+		&role.IsDefault,
+		&encodedPermissions,
+		&role.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Role{}, ErrNotFound
+		}
+		return Role{}, fmt.Errorf("update role: %w", err)
+	}
+
+	if err := json.Unmarshal(encodedPermissions, &role.Permissions); err != nil {
+		return Role{}, fmt.Errorf("decode role permissions: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Role{}, fmt.Errorf("commit update role tx: %w", err)
+	}
+
+	return role, nil
+}
+
+func (s *Store) DeleteRole(ctx context.Context, orgID string, roleID int64) error {
+	if roleID <= 0 {
+		return ErrInvalidRoleID
+	}
+
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var isDefault bool
+	err = tx.QueryRow(ctx, `
+		SELECT is_default
+		FROM roles
+		WHERE id = $1
+		  AND org_id = $2
+	`, roleID, orgID).Scan(&isDefault)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load role for delete: %w", err)
+	}
+	if isDefault {
+		return ErrDefaultRole
+	}
+
+	var assignedCount int64
+	err = tx.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM users
+		WHERE org_id = $1
+		  AND role_id = $2
+	`, orgID, roleID).Scan(&assignedCount)
+	if err != nil {
+		return fmt.Errorf("count assigned users: %w", err)
+	}
+	if assignedCount > 0 {
+		return ErrRoleAssigned
+	}
+
+	commandTag, err := tx.Exec(ctx, `
+		DELETE FROM roles
+		WHERE id = $1
+		  AND org_id = $2
+	`, roleID, orgID)
+	if err != nil {
+		return fmt.Errorf("delete role: %w", err)
+	}
+	if commandTag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit delete role tx: %w", err)
+	}
+
+	return nil
+}
+
+func normalizePermissions(permissions []string) ([]string, error) {
+	if len(permissions) == 0 {
+		return []string{}, nil
+	}
+
+	normalized := make([]string, 0, len(permissions))
+	seen := make(map[string]struct{}, len(permissions))
+	for _, rawPermission := range permissions {
+		permission := strings.ToLower(strings.TrimSpace(rawPermission))
+		if permission == "" {
+			continue
+		}
+		if _, ok := allowedPermissions[permission]; !ok {
+			return nil, fmt.Errorf("unsupported permission: %s", permission)
+		}
+		if _, exists := seen[permission]; exists {
+			continue
+		}
+		seen[permission] = struct{}{}
+		normalized = append(normalized, permission)
+	}
+
+	return normalized, nil
 }
 
 func (s *Store) ListUsers(ctx context.Context, orgID string) ([]User, error) {

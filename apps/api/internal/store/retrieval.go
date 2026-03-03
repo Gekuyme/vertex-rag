@@ -16,6 +16,7 @@ type RetrievalOptions struct {
 	QueryEmbedding []float32
 	TopK           int
 	CandidateK     int
+	MaxPerDoc      int
 }
 
 type RetrievalChunk struct {
@@ -60,6 +61,14 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 	}
 	if candidateK > 100 {
 		candidateK = 100
+	}
+
+	maxPerDoc := opts.MaxPerDoc
+	if maxPerDoc <= 0 || maxPerDoc > topK {
+		maxPerDoc = topK
+	}
+	if maxPerDoc < 1 {
+		maxPerDoc = 1
 	}
 
 	queryEmbedding := formatEmbeddingVector(opts.QueryEmbedding)
@@ -139,36 +148,43 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 				1.0 / (60 + rank) AS text_score
 			FROM text_hits
 		),
-		aggregated AS (
+			aggregated AS (
+				SELECT
+					chunk_id,
+					document_id,
+					doc_title,
+					doc_filename,
+					chunk_index,
+					content,
+					metadata,
+					MAX(vector_score) AS vector_score,
+					MAX(text_score) AS text_score,
+					SUM(vector_score + text_score) AS score
+				FROM merged
+				GROUP BY chunk_id, document_id, doc_title, doc_filename, chunk_index, content, metadata
+			),
+			limited AS (
+				SELECT
+					*,
+					ROW_NUMBER() OVER (PARTITION BY document_id ORDER BY score DESC, chunk_index ASC) AS doc_rank
+				FROM aggregated
+			)
 			SELECT
-				chunk_id,
-				document_id,
+				chunk_id::text,
+				document_id::text,
 				doc_title,
 				doc_filename,
 				chunk_index,
 				content,
-				metadata,
-				MAX(vector_score) AS vector_score,
-				MAX(text_score) AS text_score,
-				SUM(vector_score + text_score) AS score
-			FROM merged
-			GROUP BY chunk_id, document_id, doc_title, doc_filename, chunk_index, content, metadata
-		)
-		SELECT
-			chunk_id::text,
-			document_id::text,
-			doc_title,
-			doc_filename,
-			chunk_index,
-			content,
-			metadata::text,
-			vector_score,
-			text_score,
-			score
-		FROM aggregated
-		ORDER BY score DESC, chunk_index ASC
-		LIMIT $6
-	`, opts.OrgID, opts.RoleID, query, queryEmbedding, candidateK, topK)
+				metadata::text,
+				vector_score,
+				text_score,
+				score
+			FROM limited
+			WHERE doc_rank <= $7
+			ORDER BY score DESC, vector_score DESC, text_score DESC, chunk_index ASC
+			LIMIT $6
+		`, opts.OrgID, opts.RoleID, query, queryEmbedding, candidateK, topK, maxPerDoc)
 	if err != nil {
 		return nil, fmt.Errorf("retrieve chunks: %w", err)
 	}

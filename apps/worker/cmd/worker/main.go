@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -20,6 +21,38 @@ import (
 	"github.com/hibiken/asynq"
 )
 
+func waitForDB(ctx context.Context, dbStore *store.Store) error {
+	deadline := time.Now().Add(60 * time.Second)
+	backoff := 200 * time.Millisecond
+
+	var lastErr error
+	for time.Now().Before(deadline) {
+		attemptCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		err := dbStore.Ping(attemptCtx)
+		cancel()
+
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		log.Printf("db not ready yet: %v", err)
+
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		backoff *= 2
+		if backoff > 2*time.Second {
+			backoff = 2 * time.Second
+		}
+	}
+
+	return fmt.Errorf("db not ready after 60s: %w", lastErr)
+}
+
 func main() {
 	cfg := config.Load()
 
@@ -29,8 +62,10 @@ func main() {
 	}
 	defer dbStore.Close()
 
-	if err := dbStore.Ping(context.Background()); err != nil {
-		log.Fatalf("ping db: %v", err)
+	startupCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	if err := waitForDB(startupCtx, dbStore); err != nil {
+		log.Fatalf("wait for db: %v", err)
 	}
 
 	storageClient, err := storage.NewS3Client(context.Background(), cfg.S3)

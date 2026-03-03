@@ -27,7 +27,7 @@ cp .env.example .env
 2. Start local services:
 
 ```bash
-docker compose --env-file .env -f deploy/compose/docker-compose.yml up --build
+docker compose --env-file .env -f deploy/compose/docker-compose.yml -f deploy/compose/docker-compose.dev.yml up --build
 ```
 
 3. Apply database migrations:
@@ -51,8 +51,18 @@ curl http://localhost:8082/healthz
 ## Make targets
 
 - `make rebuild` - rebuild and restart all services.
+- `make up-selfhost` - run prebuilt private images only (no local build).
+- `make pull-selfhost` - pull prebuilt private images.
 - `make migrate` - apply SQL migrations (`000001`..`000006`).
 - `make test` - run API and worker tests.
+- `make test-e2e` - run Playwright e2e smoke (`login -> upload -> strict chat`).
+- `make test-integration` - run integration test targets.
+- `make test-integration-acl` - run ACL integration scenario.
+- `make test-integration-mode` - verify strict/unstrict toggle applies to next request only.
+- `make test-integration-pdf` - verify PDF ingest `ready` + non-empty embeddings + strict citations.
+- `make test-integration-retrieval` - verify retrieval stability + unstrict RBAC on internal chunks.
+- `make test-integration-cache` - verify repeated strict query gets faster from cache.
+- `make smoke-role-acl` - run role ACL smoke scenario (restricted document visibility by role).
 - `make ps` - show compose status.
 
 ## Embeddings providers
@@ -74,6 +84,25 @@ API supports `LLM_PROVIDER=local|openai|ollama`:
   - If Ollama runs as compose service (`--profile local-llm`), use `OLLAMA_BASE_URL=http://ollama:11434`.
   - Optional tuning: `LLM_OLLAMA_NUM_CTX` (default `4096`) and `LLM_OLLAMA_KEEP_ALIVE` (default `30m`).
 
+Provider reliability controls:
+
+- `LLM_HTTP_TIMEOUT` (default `60s`)
+- `LLM_MAX_RETRIES` (default `2`)
+- `LLM_RETRY_BACKOFF` (default `400ms`)
+- `LLM_MAX_CONTEXT_CHARS` (default `7000`)
+
+## Unstrict web-search (optional)
+
+Unstrict mode can enrich answers with web snippets behind a feature flag:
+
+- `WEB_SEARCH_ENABLED=true|false`
+- `SEARCH_API_PROVIDER=brave`
+- `SEARCH_API_KEY=...`
+- `SEARCH_MAX_RESULTS` (default `5`)
+- `SEARCH_HTTP_TIMEOUT` (default `6s`)
+
+Web-search context is only injected in `unstrict` mode and only for roles with `can_toggle_web_search`.
+
 ## Redis cache (RAG)
 
 API supports Redis cache for retrieval and strict answers:
@@ -81,8 +110,20 @@ API supports Redis cache for retrieval and strict answers:
 - `CACHE_ENABLED=true|false`
 - `CACHE_RETRIEVAL_TTL` (default `10m`)
 - `CACHE_ANSWER_TTL` (default `10m`)
+- `CACHE_UNSTRICT_ANSWER=true|false` (default `false`)
 
 Cache keys include `org_id`, `role_id`, `mode`, normalized query hash, and `kb_version`.
+
+## Security/hardening
+
+- `APP_ENV=production` requires non-default `JWT_SECRET`.
+- `CORS_ORIGIN` supports comma-separated allowlist.
+- Cookie controls: `COOKIE_SECURE`, `COOKIE_SAMESITE=lax|strict|none`.
+- Basic API rate limiting: `RATE_LIMIT_RPM`, `RATE_LIMIT_BURST`.
+
+## Self-host guide
+
+- See `deploy/compose/SELF_HOST.md` for private registry deployment, migrations, and Ollama variants.
 
 ## Implemented API endpoints (current)
 
@@ -103,6 +144,8 @@ Cache keys include `org_id`, `role_id`, `mode`, normalized query hash, and `kb_v
 - `POST /chats/{id}/messages/stream`
 - `GET /admin/roles`
 - `POST /admin/roles`
+- `PATCH /admin/roles/{id}`
+- `DELETE /admin/roles/{id}`
 - `GET /admin/users`
 - `PATCH /admin/users/{id}/role`
 - `POST /admin/retrieval/debug`
