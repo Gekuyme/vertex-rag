@@ -81,9 +81,16 @@ type ChatMessage = {
 };
 
 type RequestOptions = {
-  method?: "GET" | "POST" | "PATCH";
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
   body?: unknown;
   token?: string;
+};
+
+type StreamDonePayload = {
+  mode: "strict" | "unstrict";
+  user_message: ChatMessage;
+  assistant_message: ChatMessage;
+  citations: Citation[];
 };
 
 type ConsoleAppProps = {
@@ -115,6 +122,10 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draftMessage, setDraftMessage] = useState("");
   const [messageMode, setMessageMode] = useState<"strict" | "unstrict">("strict");
+  const [streamingAssistant, setStreamingAssistant] = useState("");
+  const [isStreamingMessage, setIsStreamingMessage] = useState(false);
+  const [isCitationPreviewOpen, setIsCitationPreviewOpen] = useState(false);
+  const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -142,6 +153,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   );
   const isSettingsModalPresent = useModalPresence(isSettingsOpen, modalAnimationMs);
   const isUploadModalPresent = useModalPresence(isUploadModalOpen, modalAnimationMs);
+  const isCitationPreviewPresent = useModalPresence(isCitationPreviewOpen, modalAnimationMs);
 
   useEffect(() => {
     const storedToken = window.localStorage.getItem(accessTokenStorageKey);
@@ -181,7 +193,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   }, [messages, view]);
 
   useEffect(() => {
-    if (!isSettingsOpen && !isUploadModalOpen) {
+    if (!isSettingsOpen && !isUploadModalOpen && !isCitationPreviewOpen) {
       return;
     }
 
@@ -189,12 +201,13 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       if (event.key === "Escape") {
         setIsSettingsOpen(false);
         setIsUploadModalOpen(false);
+        setIsCitationPreviewOpen(false);
       }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isSettingsOpen, isUploadModalOpen]);
+  }, [isSettingsOpen, isUploadModalOpen, isCitationPreviewOpen]);
 
   async function hydrateSession(accessToken: string) {
     try {
@@ -460,11 +473,25 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     if (content === "") {
       return;
     }
+    const optimisticMessageID = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const optimisticUserMessage: ChatMessage = {
+      id: optimisticMessageID,
+      chat_id: activeChatID,
+      user_id: user?.id || null,
+      role: "user",
+      mode: messageMode,
+      content,
+      citations: [],
+      created_at: new Date().toISOString()
+    };
 
     setIsBusy(true);
+    setIsStreamingMessage(true);
     setMessage("");
     setError("");
     setDraftMessage("");
+    setStreamingAssistant("");
+    setMessages((current) => [...current, optimisticUserMessage]);
 
     try {
       const payload: Record<string, unknown> = {
@@ -476,25 +503,93 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
         payload.mode = messageMode;
       }
 
-      const response = await apiRequest<{
-        mode: "strict" | "unstrict";
-        user_message: ChatMessage;
-        assistant_message: ChatMessage;
-        citations: Citation[];
-      }>(`/chats/${activeChatID}/messages`, {
-        method: "POST",
-        token,
-        body: payload
+      const response = await streamChatMessage(activeChatID, payload, token, {
+        onUserMessage(nextMessage) {
+          setMessages((current) => {
+            let didReplaceOptimistic = false;
+            const replaced = current.map((entry) => {
+              if (entry.id === optimisticMessageID) {
+                didReplaceOptimistic = true;
+                return nextMessage;
+              }
+              return entry;
+            });
+            if (replaced.some((entry) => entry.id === nextMessage.id)) {
+              return replaced;
+            }
+            return didReplaceOptimistic ? replaced : [...replaced, nextMessage];
+          });
+        },
+        onAssistantDelta(delta) {
+          setStreamingAssistant((current) => current + delta);
+        }
       });
 
-      setMessages((current) => [...current, response.user_message, response.assistant_message]);
+      setMessages((current) => {
+        const replacedOptimistic = current.map((entry) =>
+          entry.id === optimisticMessageID ? response.user_message : entry
+        );
+        const nextMessages = [...replacedOptimistic];
+        if (!nextMessages.some((entry) => entry.id === response.user_message.id)) {
+          nextMessages.push(response.user_message);
+        }
+        if (!nextMessages.some((entry) => entry.id === response.assistant_message.id)) {
+          nextMessages.push(response.assistant_message);
+        }
+        return nextMessages;
+      });
+      setStreamingAssistant("");
       // Refresh list so sidebar ordering stays accurate, but keep active chat and local messages.
       await refreshChats(token);
+    } catch (requestError) {
+      setStreamingAssistant("");
+      setMessages((current) => current.filter((entry) => entry.id !== optimisticMessageID));
+      setError(errorMessage(requestError));
+    } finally {
+      setIsBusy(false);
+      setIsStreamingMessage(false);
+      queueMicrotask(() => composerRef.current?.focus());
+    }
+  }
+
+  async function onDeleteChat() {
+    if (!token || !activeChatID) {
+      return;
+    }
+
+    if (!window.confirm("Удалить текущий чат? Это действие нельзя отменить.")) {
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      await apiRequest(`/chats/${activeChatID}`, {
+        method: "DELETE",
+        token
+      });
+
+      const list = await refreshChats(token);
+      if (list.length === 0) {
+        const created = await apiRequest<Chat>("/chats", {
+          method: "POST",
+          token,
+          body: { title: "" }
+        });
+        setChats([created]);
+        setActiveChatID(created.id);
+        setMessages([]);
+      } else {
+        const nextChatID = list[0].id;
+        setActiveChatID(nextChatID);
+        await loadChatMessages(token, nextChatID);
+      }
+      setMessage("Чат удалён.");
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
       setIsBusy(false);
-      queueMicrotask(() => composerRef.current?.focus());
     }
   }
 
@@ -518,6 +613,15 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     } finally {
       setIsBusy(false);
     }
+  }
+
+  function onOpenCitationPreview(citation: Citation) {
+    setActiveCitation(citation);
+    setIsCitationPreviewOpen(true);
+  }
+
+  function closeCitationPreview() {
+    setIsCitationPreviewOpen(false);
   }
 
   function toggleUploadRole(roleID: number) {
@@ -565,12 +669,21 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setActiveChatID("");
     setMessages([]);
     setDraftMessage("");
+    setStreamingAssistant("");
+    setIsStreamingMessage(false);
   }
 
   const activeChat = useMemo(
     () => chats.find((chat) => chat.id === activeChatID) || null,
     [chats, activeChatID]
   );
+  const activeCitationDocument = useMemo(() => {
+    if (!activeCitation) {
+      return null;
+    }
+
+    return documents.find((entry) => entry.id === activeCitation.document_id) || null;
+  }, [activeCitation, documents]);
 
   const shellClassName = user ? "shell shellApp" : "shell";
   const cardClassName = user ? "card cardApp" : "card";
@@ -715,7 +828,18 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                   {view === "users" && <span>Пользователи</span>}
                   {view === "account" && <span>Аккаунт</span>}
                 </div>
-                <div className="mainHeaderRight" />
+                <div className="mainHeaderRight">
+                  {view === "chat" && activeChatID && (
+                    <button
+                      type="button"
+                      className="btn btnSecondary btnSmall"
+                      onClick={() => void onDeleteChat()}
+                      disabled={isBusy || isStreamingMessage}
+                    >
+                      Удалить чат
+                    </button>
+                  )}
+                </div>
               </header>
 
               {view === "chat" && (
@@ -747,13 +871,18 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                               <div className="detailsBody">
                                 <div className="sources">
                                   {entry.citations.map((citation, index) => (
-                                    <div className="source" key={`${citation.chunk_id}-${index}`}>
+                                    <button
+                                      type="button"
+                                      className="source sourceBtn"
+                                      key={`${citation.chunk_id}-${index}`}
+                                      onClick={() => onOpenCitationPreview(citation)}
+                                    >
                                       <div className="sourceTitle">
                                         {citation.doc_title}{" "}
                                         <span className="sourceMeta">({citation.doc_filename})</span>
                                       </div>
                                       <div className="sourceSnippet">{citation.snippet}</div>
-                                    </div>
+                                    </button>
                                   ))}
                                 </div>
                               </div>
@@ -762,6 +891,24 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                         </div>
                       </div>
                     ))}
+
+                    {isStreamingMessage && (
+                      <div className="chatMessageRow fromAssistant">
+                        <div className="chatBubble">
+                          <div className="chatBubbleMeta">
+                            <span className="chatRole">Ассистент</span>
+                            <span className="chatMode">{messageMode}</span>
+                          </div>
+                          <div className="chatBubbleContent">
+                            {streamingAssistant || (
+                              <span className="thinkingText">
+                                Думает<span className="thinkingDots" aria-hidden="true"></span>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="composerCloud" aria-hidden="true" />
@@ -815,7 +962,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                           </div>
                         </div>
 
-                        <button type="submit" className="btn btnPrimary composerSendBtn" disabled={isBusy || draftMessage.trim() === ""}>
+                        <button
+                          type="submit"
+                          className="btn btnPrimary composerSendBtn"
+                          disabled={isBusy || isStreamingMessage || draftMessage.trim() === ""}
+                        >
                           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                         </button>
                       </div>
@@ -1288,6 +1439,61 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
           </div>
         )}
 
+        {user && isCitationPreviewPresent && activeCitation && (
+          <div
+            className={`settingsModalOverlay ${isCitationPreviewOpen ? "modalOverlayVisible" : "modalOverlayHidden"}`}
+            onClick={closeCitationPreview}
+          >
+            <div
+              className={`settingsModal settingsModalUpload ${isCitationPreviewOpen ? "modalCardVisible" : "modalCardHidden"}`}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Просмотр источника"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="settingsModalBar">
+                <div className="settingsModalTitle">Источник ответа</div>
+                <button type="button" className="iconCreateBtn" onClick={closeCitationPreview} aria-label="Закрыть окно источника">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+              </div>
+              <div className="settingsModalContent settingsModalContentUpload">
+                <div className="sourcePreviewGrid">
+                  <p><strong>Документ</strong><br />{activeCitation.doc_title}</p>
+                  <p><strong>Файл</strong><br />{activeCitation.doc_filename}</p>
+                  <p><strong>Chunk ID</strong><br />{activeCitation.chunk_id}</p>
+                  <p><strong>Document ID</strong><br />{activeCitation.document_id}</p>
+                  <p><strong>Страница</strong><br />{activeCitation.page ?? "—"}</p>
+                  <p><strong>Секция</strong><br />{activeCitation.section || "—"}</p>
+                </div>
+                <div className="sourcePreviewSnippet">
+                  <strong>Фрагмент</strong>
+                  <p>{activeCitation.snippet || "Фрагмент не указан"}</p>
+                </div>
+                <div className="sourcePreviewGrid">
+                  <p><strong>Скоринг</strong><br />total: {activeCitation.score?.toFixed(4) ?? "—"}</p>
+                  <p><strong>Vector</strong><br />{activeCitation.vector_score?.toFixed(4) ?? "—"}</p>
+                  <p><strong>Text</strong><br />{activeCitation.text_score?.toFixed(4) ?? "—"}</p>
+                  <p><strong>Статус документа</strong><br />{activeCitationDocument?.status || "unknown"}</p>
+                </div>
+                <div className="settingsRow">
+                  <button
+                    type="button"
+                    className="btn btnSecondary btnSmall"
+                    onClick={() => {
+                      closeCitationPreview();
+                      setSettingsTab("knowledge");
+                      setIsSettingsOpen(true);
+                    }}
+                  >
+                    Перейти к базе знаний
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
       </section>
     </main>
   );
@@ -1351,6 +1557,110 @@ async function apiRequestMultipart<T = unknown>(path: string, formData: FormData
   }
 
   return payload as T;
+}
+
+async function streamChatMessage(
+  chatID: string,
+  body: Record<string, unknown>,
+  token: string,
+  handlers: {
+    onUserMessage: (message: ChatMessage) => void;
+    onAssistantDelta: (delta: string) => void;
+  }
+): Promise<StreamDonePayload> {
+  const response = await fetch(`${APIBaseURL}/chats/${chatID}/messages/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    credentials: "include",
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    const reason = typeof payload?.error === "string" ? payload.error : `Request failed: ${response.status}`;
+    throw new Error(reason);
+  }
+
+  if (!response.body) {
+    throw new Error("Streaming response body is missing");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let donePayload: StreamDonePayload | null = null;
+
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) {
+      break;
+    }
+
+    buffer += decoder.decode(chunk.value, { stream: true });
+
+    let separatorIndex = buffer.indexOf("\n\n");
+    for (; separatorIndex !== -1; separatorIndex = buffer.indexOf("\n\n")) {
+      const rawEvent = buffer.slice(0, separatorIndex);
+      buffer = buffer.slice(separatorIndex + 2);
+
+      const parsed = parseSSEEvent(rawEvent);
+      if (!parsed) {
+        continue;
+      }
+
+      if (parsed.event === "user_message") {
+        const payload = JSON.parse(parsed.data) as ChatMessage;
+        handlers.onUserMessage(payload);
+      }
+      if (parsed.event === "assistant_delta") {
+        const payload = JSON.parse(parsed.data) as { delta?: string };
+        if (payload.delta) {
+          handlers.onAssistantDelta(payload.delta);
+        }
+      }
+      if (parsed.event === "done") {
+        donePayload = JSON.parse(parsed.data) as StreamDonePayload;
+      }
+    }
+  }
+
+  if (!donePayload) {
+    throw new Error("Stream finished without done event");
+  }
+
+  return donePayload;
+}
+
+function parseSSEEvent(rawChunk: string): { event: string; data: string } | null {
+  const normalized = rawChunk.replace(/\r/g, "").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  let event = "message";
+  const dataLines: string[] = [];
+
+  normalized.split("\n").forEach((line) => {
+    if (line.startsWith("event:")) {
+      event = line.slice("event:".length).trim();
+      return;
+    }
+    if (line.startsWith("data:")) {
+      let data = line.slice("data:".length);
+      if (data.startsWith(" ")) {
+        data = data.slice(1);
+      }
+      dataLines.push(data);
+    }
+  });
+
+  return {
+    event,
+    data: dataLines.join("\n")
+  };
 }
 
 function errorMessage(value: unknown): string {

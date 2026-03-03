@@ -494,6 +494,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 }
 .mainHeaderRight {
   min-width: 1px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .navToggle {
@@ -682,6 +685,62 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   white-space: pre-wrap;
 }
 
+.thinkingText {
+  display: inline-flex;
+  align-items: baseline;
+  font-weight: 500;
+  background-image: linear-gradient(
+    90deg,
+    #7c8aa0 0%,
+    #4f8cff 28%,
+    #22c55e 52%,
+    #4f8cff 76%,
+    #7c8aa0 100%
+  );
+  background-size: 240% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: thinkingTextShimmer 2.4s linear infinite;
+}
+
+.thinkingDots {
+  display: inline-flex;
+  align-items: flex-end;
+  width: 1.3em;
+  overflow: hidden;
+  vertical-align: -0.06em;
+  line-height: 1;
+  text-align: left;
+  margin-left: 2px;
+}
+
+.thinkingDots::after {
+  content: "...";
+  display: inline-block;
+  line-height: 1;
+  transform: translateY(0.08em);
+  animation: thinkingDots 1s steps(4, end) infinite;
+}
+
+@keyframes thinkingTextShimmer {
+  from {
+    background-position: 200% 50%;
+  }
+  to {
+    background-position: -40% 50%;
+  }
+}
+
+@keyframes thinkingDots {
+  from {
+    width: 0;
+  }
+  to {
+    width: 1.25em;
+  }
+}
+
 /* Sources / Citations Detail block */
 .details {
   margin-top: 16px;
@@ -714,6 +773,17 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   margin-bottom: 8px;
 }
 .source:last-child { margin-bottom: 0; }
+.sourceBtn {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, transform 0.16s ease;
+}
+.sourceBtn:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+  transform: translateY(-1px);
+}
 .sourceTitle {
   font-weight: 600;
   font-size: 0.85rem;
@@ -724,6 +794,26 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   font-size: 0.8rem;
   color: var(--muted);
   line-height: 1.5;
+}
+.sourcePreviewGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+.sourcePreviewGrid p {
+  margin: 0;
+  line-height: 1.45;
+}
+.sourcePreviewSnippet {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  padding: 12px;
+}
+.sourcePreviewSnippet p {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  line-height: 1.55;
 }
 
 /* Modern Fixed Bottom Composer */

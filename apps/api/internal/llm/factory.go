@@ -18,7 +18,7 @@ func NewProvider(cfg config.LLMConfig) (Provider, error) {
 		}
 		return newOpenAIProvider(cfg.OpenAIBaseURL, cfg.OpenAIKey, cfg.OpenAIModel), nil
 	case "ollama":
-		return newOllamaProvider(cfg.OllamaBaseURL, cfg.OllamaModel), nil
+		return newOllamaProvider(cfg.OllamaBaseURL, cfg.OllamaModel, cfg.OllamaNumCtx, cfg.OllamaKeepAlive), nil
 	default:
 		return nil, fmt.Errorf("unsupported LLM_PROVIDER: %s", cfg.Provider)
 	}

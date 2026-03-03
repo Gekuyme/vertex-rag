@@ -1,5 +1,6 @@
 COMPOSE_FILE := deploy/compose/docker-compose.yml
-COMPOSE := docker compose -f $(COMPOSE_FILE)
+ENV_FILE ?= .env
+COMPOSE := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE)
 
 .PHONY: help up up-core up-build rebuild rebuild-web rebuild-api rebuild-worker down ps logs logs-api logs-web logs-worker \
 	stop-web \
