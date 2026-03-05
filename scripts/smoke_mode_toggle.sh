@@ -56,20 +56,17 @@ curl -sS -N -X POST "${API_BASE_URL}/chats/${chat_id}/messages/stream" \
   -d "{\"content\":\"${long_question}\"}" >"${stream_file}" &
 stream_pid=$!
 
-sleep 0.2
-
-echo "==> Toggle default mode to strict while stream is in progress"
-curl -fsS -X PATCH "${API_BASE_URL}/me/settings" \
-  -H "Authorization: Bearer ${token}" \
-  -H "Content-Type: application/json" \
-  -d '{"default_mode":"strict"}' >/dev/null
-
-wait "${stream_pid}"
+for _ in $(seq 1 50); do
+  if grep -q '^event: user_message$' "${stream_file}" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
 
 first_mode="$(awk '
   /^event: / { event=$2 }
   /^data: / {
-    if (event == "done") {
+    if (event == "user_message") {
       gsub(/^data: /, "", $0)
       print $0
       exit
@@ -78,9 +75,17 @@ first_mode="$(awk '
 ' "${stream_file}" | jq -r '.mode')"
 
 if [[ "$first_mode" != "unstrict" ]]; then
-  echo "expected in-flight request mode=unstrict, got ${first_mode}" >&2
+  echo "expected started in-flight request mode=unstrict, got ${first_mode}" >&2
   exit 1
 fi
+
+echo "==> Toggle default mode to strict while stream is in progress"
+curl -fsS -X PATCH "${API_BASE_URL}/me/settings" \
+  -H "Authorization: Bearer ${token}" \
+  -H "Content-Type: application/json" \
+  -d '{"default_mode":"strict"}' >/dev/null
+
+wait "${stream_pid}"
 
 echo "==> Next request without explicit mode must use strict"
 second_response="$(curl -fsS -X POST "${API_BASE_URL}/chats/${chat_id}/messages" \

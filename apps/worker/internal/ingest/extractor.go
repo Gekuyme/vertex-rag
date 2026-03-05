@@ -50,7 +50,7 @@ func extractPDFText(ctx context.Context, rawBytes []byte) (string, error) {
 		return "", fmt.Errorf("write temporary pdf: %w", err)
 	}
 
-	command := exec.CommandContext(ctx, "pdftotext", "-layout", inputPath, outputPath)
+	command := exec.CommandContext(ctx, "pdftotext", "-layout", "-enc", "UTF-8", inputPath, outputPath)
 	if output, err := command.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("pdftotext failed: %w (%s)", err, strings.TrimSpace(string(output)))
 	}
@@ -110,11 +110,23 @@ func extractDOCXText(rawBytes []byte) (string, error) {
 				if err := decoder.DecodeElement(&value, &node); err != nil {
 					return "", fmt.Errorf("decode text node: %w", err)
 				}
-				builder.WriteString(html.UnescapeString(value))
-				builder.WriteRune('\n')
+				text := html.UnescapeString(value)
+				if text == "" {
+					continue
+				}
+				text = strings.ReplaceAll(text, "\r", " ")
+				text = strings.ReplaceAll(text, "\n", " ")
+				text = strings.ReplaceAll(text, "\t", " ")
+				text = strings.ReplaceAll(text, "\u00a0", " ")
+				builder.WriteString(text)
+			}
+		case xml.EndElement:
+			// Paragraph boundary: add a blank line to preserve structure for chunking.
+			if node.Name.Local == "p" {
+				builder.WriteString("\n\n")
 			}
 		}
 	}
 
-	return builder.String(), nil
+	return strings.TrimSpace(builder.String()), nil
 }

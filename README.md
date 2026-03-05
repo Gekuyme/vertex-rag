@@ -39,6 +39,7 @@ cat db/migrations/000003_documents.up.sql | docker compose -f deploy/compose/doc
 cat db/migrations/000004_kb_version.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
 cat db/migrations/000005_document_embedding_vector.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
 cat db/migrations/000006_chat_settings.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
+cat db/migrations/000007_backfill_can_use_unstrict.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
 ```
 
 4. Check health endpoints:
@@ -53,7 +54,8 @@ curl http://localhost:8082/healthz
 - `make rebuild` - rebuild and restart all services.
 - `make up-selfhost` - run prebuilt private images only (no local build).
 - `make pull-selfhost` - pull prebuilt private images.
-- `make migrate` - apply SQL migrations (`000001`..`000006`).
+- `make migrate` - apply SQL migrations (`000001`..`000007`).
+- `make reingest-all` - queue reingest for every document.
 - `make test` - run API and worker tests.
 - `make test-e2e` - run Playwright e2e smoke (`login -> upload -> strict chat`).
 - `make test-integration` - run integration test targets.
@@ -69,9 +71,11 @@ curl http://localhost:8082/healthz
 
 API and worker support `EMBED_PROVIDER=local|openai|ollama`:
 
-- `local` (default) - deterministic local embeddings for dev/no external dependency.
+- `local` - deterministic local embeddings for dev/no external dependency.
 - `openai` - set `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, and `EMBED_MODEL_OPENAI`.
 - `ollama` - set `OLLAMA_BASE_URL` and `EMBED_MODEL_OLLAMA` (use compose `local-llm` profile if needed).
+  - Recommended for real retrieval quality: `EMBED_PROVIDER=ollama` and `EMBED_MODEL_OLLAMA=nomic-embed-text`.
+  - After changing embedding provider/model, run `make reingest-all`.
 
 ## LLM providers
 
@@ -102,6 +106,8 @@ Unstrict mode can enrich answers with web snippets behind a feature flag:
 - `SEARCH_HTTP_TIMEOUT` (default `6s`)
 
 Web-search context is only injected in `unstrict` mode and only for roles with `can_toggle_web_search`.
+
+`unstrict` access itself is controlled by `can_use_unstrict`. For backward compatibility one rollout supports `UNSTRICT_LEGACY_TOGGLE_WEB_SEARCH=true`, which temporarily treats `can_toggle_web_search` as sufficient for `unstrict`.
 
 ## Redis cache (RAG)
 

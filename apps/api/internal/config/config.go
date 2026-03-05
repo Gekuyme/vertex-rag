@@ -27,6 +27,7 @@ type Config struct {
 	Embeddings     EmbeddingConfig
 	LLM            LLMConfig
 	Search         SearchConfig
+	Features       FeatureConfig
 }
 
 type RedisConfig struct {
@@ -57,6 +58,10 @@ type SearchConfig struct {
 	APIKey     string
 	MaxResults int
 	Timeout    time.Duration
+}
+
+type FeatureConfig struct {
+	UnstrictLegacyToggleWebSearch bool
 }
 
 type EmbeddingConfig struct {
@@ -194,6 +199,9 @@ func Load() (Config, error) {
 			APIKey:     envOrDefault("SEARCH_API_KEY", ""),
 			MaxResults: parseIntWithDefault("SEARCH_MAX_RESULTS", 5),
 			Timeout:    searchTimeout,
+		},
+		Features: FeatureConfig{
+			UnstrictLegacyToggleWebSearch: parseBoolWithDefault("UNSTRICT_LEGACY_TOGGLE_WEB_SEARCH", true),
 		},
 	}
 	if cfg.RateLimitRPM < 0 {

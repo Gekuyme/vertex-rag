@@ -1,6 +1,10 @@
 package httpserver
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/store"
+)
 
 func TestIsStrictCompletionValid_AllowsFallback(t *testing.T) {
 	if !isStrictCompletionValid("Недостаточно данных в базе знаний.", nil) {
@@ -9,35 +13,60 @@ func TestIsStrictCompletionValid_AllowsFallback(t *testing.T) {
 }
 
 func TestIsStrictCompletionValid_RequiresCitationMarker(t *testing.T) {
-	citations := []retrievalCitation{{ChunkID: "c1"}}
-	if isStrictCompletionValid("Ответ без ссылок.", citations) {
+	retrieved := []store.RetrievalChunk{{ChunkID: "c1", Content: "Источник"}}
+	if isStrictCompletionValid("Ответ без ссылок.", retrieved) {
 		t.Fatalf("expected strict validation to reject answer without [N] citations")
 	}
 }
 
 func TestIsStrictCompletionValid_AllowsValidCitationMarker(t *testing.T) {
-	citations := []retrievalCitation{{ChunkID: "c1"}}
-	answer := "Краткий ответ: Ответ со ссылкой [1].\n\nЦитаты:\n- \"Цитата\" [1]"
-	if !isStrictCompletionValid(answer, citations) {
+	retrieved := []store.RetrievalChunk{{ChunkID: "c1", Content: "Цитата из документа. Еще слова."}}
+	answer := "Краткий ответ: Ответ со ссылкой [1].\n\nЦитаты:\n- \"Цитата из документа\" [1]"
+	if !isStrictCompletionValid(answer, retrieved) {
 		t.Fatalf("expected strict validation to allow answer with [1]")
 	}
 }
 
 func TestIsStrictCompletionValid_RejectsOutOfRangeCitationMarker(t *testing.T) {
-	citations := []retrievalCitation{{ChunkID: "c1"}}
-	answer := "Краткий ответ: Ответ со ссылкой [2].\n\nЦитаты:\n- \"Цитата\" [2]"
-	if isStrictCompletionValid(answer, citations) {
+	retrieved := []store.RetrievalChunk{{ChunkID: "c1", Content: "Цитата из документа."}}
+	answer := "Краткий ответ: Ответ со ссылкой [2].\n\nЦитаты:\n- \"Цитата из документа\" [2]"
+	if isStrictCompletionValid(answer, retrieved) {
 		t.Fatalf("expected strict validation to reject out-of-range citation index")
 	}
-	answer = "Краткий ответ: Ответ со ссылкой [0].\n\nЦитаты:\n- \"Цитата\" [0]"
-	if isStrictCompletionValid(answer, citations) {
+	answer = "Краткий ответ: Ответ со ссылкой [0].\n\nЦитаты:\n- \"Цитата из документа\" [0]"
+	if isStrictCompletionValid(answer, retrieved) {
 		t.Fatalf("expected strict validation to reject zero citation index")
 	}
 }
 
 func TestIsStrictCompletionValid_RequiresStrictFormatHeadings(t *testing.T) {
-	citations := []retrievalCitation{{ChunkID: "c1"}}
-	if isStrictCompletionValid("Ответ со ссылкой [1].", citations) {
+	retrieved := []store.RetrievalChunk{{ChunkID: "c1", Content: "Цитата из документа."}}
+	if isStrictCompletionValid("Ответ со ссылкой [1].", retrieved) {
 		t.Fatalf("expected strict validation to reject answers without required headings")
+	}
+}
+
+func TestIsStrictCompletionValid_RequiresDirectQuotesFromSnippet(t *testing.T) {
+	retrieved := []store.RetrievalChunk{{ChunkID: "c1", Content: "Только этот текст доступен."}}
+	answer := "Краткий ответ: Ответ со ссылкой [1].\n\nЦитаты:\n- \"Несуществующая цитата\" [1]"
+	if isStrictCompletionValid(answer, retrieved) {
+		t.Fatalf("expected strict validation to reject quotes that do not exist in snippet")
+	}
+}
+
+func TestNormalizeForQuoteMatch_RemovesSoftHyphenArtifacts(t *testing.T) {
+	normalized := normalizeForQuoteMatch("со\u00ad\nдержащихся")
+	if normalized != "содержащихся" {
+		t.Fatalf("expected normalized quote text without soft hyphen artifacts, got %q", normalized)
+	}
+}
+
+func TestBuildRetrievalQueries_UsesStemmedPrefixToken(t *testing.T) {
+	embedQuery, textQuery := buildRetrievalQueries("что такое строка")
+	if embedQuery != "что такое строка" {
+		t.Fatalf("unexpected embed query: %q", embedQuery)
+	}
+	if textQuery != "строк" {
+		t.Fatalf("expected text query to be stemmed prefix, got %q", textQuery)
 	}
 }

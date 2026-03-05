@@ -44,6 +44,7 @@ services:
       SEARCH_API_KEY: ${SEARCH_API_KEY:-}
       SEARCH_MAX_RESULTS: ${SEARCH_MAX_RESULTS:-5}
       SEARCH_HTTP_TIMEOUT: ${SEARCH_HTTP_TIMEOUT:-6s}
+      UNSTRICT_LEGACY_TOGGLE_WEB_SEARCH: ${UNSTRICT_LEGACY_TOGGLE_WEB_SEARCH:-true}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

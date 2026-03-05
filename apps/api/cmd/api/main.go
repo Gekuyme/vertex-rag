@@ -137,6 +137,7 @@ func main() {
 		cfg.RateLimitRPM,
 		cfg.RateLimitBurst,
 		cfg.LLM.MaxContextChars,
+		cfg.Features.UnstrictLegacyToggleWebSearch,
 	)
 
 	errCh := make(chan error, 1)
