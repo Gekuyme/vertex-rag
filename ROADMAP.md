@@ -96,6 +96,7 @@
 - [x] Strict больше не маскирует LLM transport/empty-output ошибки под fallback “Недостаточно данных...”.
 - [x] Нормализация soft hyphen / zero-width артефактов добавлена в ingestion и strict quote matching.
 - [x] Smoke-сценарий проверяет частый термин (`что такое строка`) и regression для `unstrict` RBAC.
+- [x] В ingestion добавлена семантическая маркировка чанков (`definition`, `procedure`, `policy`, `example`, `reference`) и retrieval учитывает `query_intent` при ранжировании.
 
 ## Milestone 6 — LLM Provider layer (сменность провайдера)
 - [x] Интерфейс `LLMProvider` (stream + non-stream).

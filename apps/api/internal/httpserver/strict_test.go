@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/store"
@@ -69,4 +70,51 @@ func TestBuildRetrievalQueries_UsesStemmedPrefixToken(t *testing.T) {
 	if textQuery != "строк" {
 		t.Fatalf("expected text query to be stemmed prefix, got %q", textQuery)
 	}
+}
+
+func TestDetectQueryIntent(t *testing.T) {
+	testCases := []struct {
+		query string
+		want  string
+	}{
+		{query: "что такое строка", want: "definition"},
+		{query: "как настроить sso", want: "procedure"},
+		{query: "можно ли отправлять пароль в чат", want: "policy"},
+		{query: "в чем разница между oauth и sso", want: "comparison"},
+		{query: "контакты бухгалтерии", want: "general"},
+	}
+
+	for _, testCase := range testCases {
+		if got := detectQueryIntent(testCase.query); got != testCase.want {
+			t.Fatalf("detectQueryIntent(%q) = %q, want %q", testCase.query, got, testCase.want)
+		}
+	}
+}
+
+func TestBuildLLMContext_IncludesChunkKindMetadata(t *testing.T) {
+	context := buildLLMContext([]store.RetrievalChunk{
+		{
+			ChunkID:     "c1",
+			DocTitle:    "Glossary",
+			DocFilename: "glossary.txt",
+			ChunkIndex:  0,
+			Content:     "Строка — это последовательность байтов.",
+			Metadata: map[string]any{
+				"chunk_kind": "definition",
+			},
+		},
+	}, 500)
+
+	if context == "" || !containsAll(context, "kind:definition", "Glossary", "Строка — это последовательность байтов.") {
+		t.Fatalf("expected context to include chunk kind metadata, got %q", context)
+	}
+}
+
+func containsAll(value string, parts ...string) bool {
+	for _, part := range parts {
+		if !strings.Contains(value, part) {
+			return false
+		}
+	}
+	return true
 }

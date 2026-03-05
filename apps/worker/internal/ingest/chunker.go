@@ -19,6 +19,7 @@ type normalizeOptions struct {
 }
 
 var markdownHeadingRE = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+var sentenceSplitRE = regexp.MustCompile(`[.!?]\s+`)
 
 func isWordRune(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r)
@@ -159,9 +160,11 @@ func chunkDocumentText(rawText, mime, filename string) []store.ChunkInput {
 		chunkRunes := runes[start:end]
 		chunkContent := strings.TrimSpace(string(chunkRunes))
 		if chunkContent != "" {
+			chunkKind := classifyChunkKind(chunkContent)
 			metadata := map[string]any{
 				"char_start": start,
 				"char_end":   end,
+				"chunk_kind": chunkKind,
 			}
 
 			if len(boundaries) > 0 {
@@ -512,4 +515,96 @@ func startsWithWord(line string) bool {
 	}
 	runes := []rune(trimmed)
 	return isWordRune(runes[0])
+}
+
+func classifyChunkKind(content string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(content))
+	if trimmed == "" {
+		return "general"
+	}
+
+	scores := map[string]int{
+		"general":    0,
+		"definition": 0,
+		"example":    0,
+		"procedure":  0,
+		"policy":     0,
+		"reference":  0,
+	}
+
+	firstLine := trimmed
+	if idx := strings.IndexByte(firstLine, '\n'); idx >= 0 {
+		firstLine = strings.TrimSpace(firstLine[:idx])
+	}
+
+	for _, pattern := range []string{
+		"что такое ", "это ", "— это", "– это", "определяется как",
+		"называется ", "is a ", "is an ", "refers to ", "defined as ",
+	} {
+		if strings.Contains(firstLine, pattern) || strings.Contains(trimmed, pattern) {
+			scores["definition"] += 3
+		}
+	}
+
+	for _, pattern := range []string{
+		"например", "for example", "example:", "пример:", "например:",
+		"например ", "such as ",
+	} {
+		if strings.Contains(trimmed, pattern) {
+			scores["example"] += 3
+		}
+	}
+
+	for _, pattern := range []string{
+		"шаг ", "шаги", "step ", "steps", "процедур", "порядок", "инструкц",
+		"как ", "how to", "follow these steps", "выполните", "сначала", "затем",
+	} {
+		if strings.Contains(trimmed, pattern) {
+			scores["procedure"] += 2
+		}
+	}
+
+	for _, pattern := range []string{
+		"должен", "должны", "обязан", "обязаны", "запрещ", "разрешено", "необходимо",
+		"требуется", "policy", "правило", "регламент", "must ", "must\n", "shall ",
+		"required", "prohibited", "allowed",
+	} {
+		if strings.Contains(trimmed, pattern) {
+			scores["policy"] += 2
+		}
+	}
+
+	for _, pattern := range []string{
+		"таблица", "сводка", "reference", "справка", "faq", "вопрос:", "ответ:",
+		"q:", "a:",
+	} {
+		if strings.Contains(trimmed, pattern) {
+			scores["reference"] += 2
+		}
+	}
+
+	lines := strings.Split(content, "\n")
+	listLines := 0
+	for _, line := range lines {
+		if looksLikeListItem(line) {
+			listLines++
+		}
+	}
+	if listLines >= 2 {
+		scores["procedure"] += 3
+	}
+	if len(lines) >= 3 && listLines == 0 && len(sentenceSplitRE.Split(trimmed, -1)) >= 4 {
+		scores["general"] += 1
+	}
+
+	bestKind := "general"
+	bestScore := scores[bestKind]
+	for _, kind := range []string{"definition", "procedure", "policy", "reference", "example", "general"} {
+		if scores[kind] > bestScore {
+			bestKind = kind
+			bestScore = scores[kind]
+		}
+	}
+
+	return bestKind
 }
