@@ -13,6 +13,7 @@ type RetrievalOptions struct {
 	OrgID          string
 	RoleID         int64
 	Query          string
+	QueryIntent    string
 	QueryEmbedding []float32
 	TopK           int
 	CandidateK     int
@@ -93,7 +94,8 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 				to_tsquery('simple', $3::text || ':*') AS query_ts,
 				NULLIF($4::text, '')::vector AS query_embedding,
 				$5::int AS candidate_k,
-				$6::int AS candidate_per_doc
+				$6::int AS candidate_per_doc,
+				$9::text AS query_intent
 		),
 		vector_ranked AS (
 			SELECT
@@ -206,7 +208,20 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 					metadata,
 					MAX(vector_score) AS vector_score,
 					MAX(text_score) AS text_score,
-					(0.65 * MAX(vector_score)) + (0.35 * MAX(text_score)) AS score
+					(0.65 * MAX(vector_score)) + (0.35 * MAX(text_score)) +
+					CASE
+						WHEN (SELECT query_intent FROM params) = 'definition' AND metadata->>'chunk_kind' = 'definition' THEN 0.18
+						WHEN (SELECT query_intent FROM params) = 'definition' AND metadata->>'chunk_kind' = 'reference' THEN 0.08
+						WHEN (SELECT query_intent FROM params) = 'definition' AND metadata->>'chunk_kind' = 'example' THEN -0.04
+						WHEN (SELECT query_intent FROM params) = 'procedure' AND metadata->>'chunk_kind' = 'procedure' THEN 0.18
+						WHEN (SELECT query_intent FROM params) = 'procedure' AND metadata->>'chunk_kind' = 'reference' THEN 0.06
+						WHEN (SELECT query_intent FROM params) = 'procedure' AND metadata->>'chunk_kind' = 'definition' THEN 0.04
+						WHEN (SELECT query_intent FROM params) = 'policy' AND metadata->>'chunk_kind' = 'policy' THEN 0.18
+						WHEN (SELECT query_intent FROM params) = 'policy' AND metadata->>'chunk_kind' = 'procedure' THEN 0.05
+						WHEN (SELECT query_intent FROM params) = 'comparison' AND metadata->>'chunk_kind' = 'reference' THEN 0.10
+						WHEN (SELECT query_intent FROM params) = 'comparison' AND metadata->>'chunk_kind' = 'definition' THEN 0.06
+						ELSE 0.0
+					END AS score
 				FROM merged
 				GROUP BY chunk_id, document_id, doc_title, doc_filename, chunk_index, content, metadata
 			),
@@ -234,7 +249,7 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 			WHERE doc_rank <= $8
 			ORDER BY score DESC, vector_score DESC, text_score DESC, chunk_index ASC, chunk_id ASC
 			LIMIT $7
-		`, opts.OrgID, opts.RoleID, query, queryEmbedding, candidateK, candidatePerDoc, topK, maxPerDoc)
+		`, opts.OrgID, opts.RoleID, query, queryEmbedding, candidateK, candidatePerDoc, topK, maxPerDoc, strings.TrimSpace(opts.QueryIntent))
 	if err != nil {
 		return nil, fmt.Errorf("retrieve chunks: %w", err)
 	}

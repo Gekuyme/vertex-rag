@@ -158,12 +158,23 @@ if [[ "$ids_1" != "$ids_2" || "$ids_1" != "$ids_3" ]]; then
 fi
 
 echo "==> Validate common-term retrieval"
-common_term_hits="$(curl -fsS -X POST "${API_BASE_URL}/admin/retrieval/debug" \
+common_term_debug="$(curl -fsS -X POST "${API_BASE_URL}/admin/retrieval/debug" \
   -H "Authorization: Bearer ${token}" \
   -H "Content-Type: application/json" \
-  -d '{"query":"что такое строка","top_k":8,"candidate_k":32}' | jq -r --arg common_doc_id "$common_term_document_id" '[.citations[] | select(.document_id == $common_doc_id)] | length')"
+  -d '{"query":"что такое строка","top_k":8,"candidate_k":32}')"
+common_term_hits="$(printf '%s' "$common_term_debug" | jq -r --arg common_doc_id "$common_term_document_id" '[.citations[] | select(.document_id == $common_doc_id)] | length')"
 if [[ "${common_term_hits:-0}" -le 0 ]]; then
   echo "common-term retrieval did not return uploaded go string document" >&2
+  exit 1
+fi
+common_term_intent="$(printf '%s' "$common_term_debug" | jq -r '.query_intent')"
+if [[ "$common_term_intent" != "definition" ]]; then
+  echo "expected query_intent=definition, got ${common_term_intent}" >&2
+  exit 1
+fi
+common_term_kind="$(printf '%s' "$common_term_debug" | jq -r --arg common_doc_id "$common_term_document_id" '.citations[] | select(.document_id == $common_doc_id) | .metadata.chunk_kind' | head -n1)"
+if [[ "$common_term_kind" != "definition" ]]; then
+  echo "expected retrieved common-term chunk_kind=definition, got ${common_term_kind}" >&2
   exit 1
 fi
 
@@ -215,4 +226,4 @@ curl -fsS -X PATCH "${API_BASE_URL}/admin/users/${user_id}/role" \
   -H "Content-Type: application/json" \
   -d "{\"role_id\":${owner_role_id}}" >/dev/null
 
-echo "Retrieval stability smoke passed: ids=${ids_1}; common-term hits=${common_term_hits}; unstrict total citations before=${citations_before}, after=${citations_after}, restricted before=${restricted_before_count}, restricted after=${restricted_after_count}"
+echo "Retrieval stability smoke passed: ids=${ids_1}; common-term hits=${common_term_hits}; intent=${common_term_intent}; kind=${common_term_kind}; unstrict total citations before=${citations_before}, after=${citations_after}, restricted before=${restricted_before_count}, restricted after=${restricted_after_count}"

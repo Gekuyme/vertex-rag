@@ -91,6 +91,7 @@ type RequestOptions = {
   method?: "GET" | "POST" | "PATCH" | "DELETE";
   body?: unknown;
   token?: string;
+  signal?: AbortSignal;
 };
 
 type StreamDonePayload = {
@@ -180,6 +181,10 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const chatLoadAbortRef = useRef<AbortController | null>(null);
+  const chatStreamAbortRef = useRef<AbortController | null>(null);
+  const streamingAssistantBufferRef = useRef("");
+  const streamingAssistantFlushFrameRef = useRef<number | null>(null);
 
   const [isBusy, setIsBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -234,6 +239,16 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => () => {
+    chatLoadAbortRef.current?.abort();
+    chatStreamAbortRef.current?.abort();
+    if (streamingAssistantFlushFrameRef.current !== null) {
+      window.cancelAnimationFrame(streamingAssistantFlushFrameRef.current);
+      streamingAssistantFlushFrameRef.current = null;
+    }
+    streamingAssistantBufferRef.current = "";
+  }, []);
+
   useEffect(() => {
     if (!user) {
       return;
@@ -256,6 +271,46 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       setMessageMode("strict");
     }
   }, [canAccessUnstrict, messageMode]);
+
+  function flushStreamingAssistantBuffer() {
+    if (streamingAssistantFlushFrameRef.current !== null) {
+      window.cancelAnimationFrame(streamingAssistantFlushFrameRef.current);
+      streamingAssistantFlushFrameRef.current = null;
+    }
+
+    const bufferedDelta = streamingAssistantBufferRef.current;
+    if (!bufferedDelta) {
+      return;
+    }
+
+    streamingAssistantBufferRef.current = "";
+    setStreamingAssistant((current) => current + bufferedDelta);
+  }
+
+  function queueStreamingAssistantDelta(delta: string) {
+    if (!delta) {
+      return;
+    }
+
+    streamingAssistantBufferRef.current += delta;
+    if (streamingAssistantFlushFrameRef.current !== null) {
+      return;
+    }
+
+    streamingAssistantFlushFrameRef.current = window.requestAnimationFrame(() => {
+      streamingAssistantFlushFrameRef.current = null;
+      flushStreamingAssistantBuffer();
+    });
+  }
+
+  function resetStreamingAssistant() {
+    if (streamingAssistantFlushFrameRef.current !== null) {
+      window.cancelAnimationFrame(streamingAssistantFlushFrameRef.current);
+      streamingAssistantFlushFrameRef.current = null;
+    }
+    streamingAssistantBufferRef.current = "";
+    setStreamingAssistant("");
+  }
 
   useEffect(() => {
     // Keep the latest message visible when chatting.
@@ -353,11 +408,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       const profile = await apiRequest<User>("/me", { token: accessToken });
       setUser(profile);
 
-      const nextSettings = await apiRequest<UserSettings>("/me/settings", { token: accessToken });
+      const [nextSettings] = await Promise.all([
+        apiRequest<UserSettings>("/me/settings", { token: accessToken }),
+        loadWorkspace(accessToken, profile),
+        bootstrapChats(accessToken)
+      ]);
       setSettings(nextSettings);
-
-      await loadWorkspace(accessToken, profile);
-      await bootstrapChats(accessToken);
 
       setMessage(`Вход выполнен как ${profile.email}`);
       setError("");
@@ -368,11 +424,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
         persistAccessToken(refreshed.access_token);
         setUser(refreshed.user);
 
-        const nextSettings = await apiRequest<UserSettings>("/me/settings", { token: refreshed.access_token });
+        const [nextSettings] = await Promise.all([
+          apiRequest<UserSettings>("/me/settings", { token: refreshed.access_token }),
+          loadWorkspace(refreshed.access_token, refreshed.user),
+          bootstrapChats(refreshed.access_token)
+        ]);
         setSettings(nextSettings);
-
-        await loadWorkspace(refreshed.access_token, refreshed.user);
-        await bootstrapChats(refreshed.access_token);
 
         setMessage(`Сессия восстановлена для ${refreshed.user.email}`);
         setError("");
@@ -383,20 +440,22 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   }
 
   async function loadWorkspace(accessToken: string, profile: User) {
-    const roleResponse = await apiRequest<{ roles: Role[] }>("/roles", { token: accessToken });
+    const [roleResponse, documentResponse, userResponse] = await Promise.all([
+      apiRequest<{ roles: Role[] }>("/roles", { token: accessToken }),
+      apiRequest<{ documents: DocumentEntry[] }>("/documents", { token: accessToken }),
+      profile.permissions.includes("can_manage_users")
+        ? apiRequest<{ users: User[] }>("/admin/users", { token: accessToken })
+        : Promise.resolve(null)
+    ]);
+
     setRoles(roleResponse.roles);
     if (roleResponse.roles.length > 0) {
       setSelectedRoleIDs([profile.role_id]);
     }
 
-    // Docs can be visible to any signed-in user, but upload is permission gated.
-    const documentResponse = await apiRequest<{ documents: DocumentEntry[] }>("/documents", {
-      token: accessToken
-    });
     setDocuments(documentResponse.documents);
 
-    if (profile.permissions.includes("can_manage_users")) {
-      const userResponse = await apiRequest<{ users: User[] }>("/admin/users", { token: accessToken });
+    if (userResponse) {
       setUsers(userResponse.users);
       const nextDraftMap: Record<string, number> = {};
       userResponse.users.forEach((entry) => {
@@ -432,10 +491,27 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   }
 
   async function loadChatMessages(accessToken: string, chatID: string) {
-    const response = await apiRequest<{ chat: Chat; messages: ChatMessage[] }>(`/chats/${chatID}/messages`, {
-      token: accessToken
-    });
-    setMessages(response.messages);
+    chatLoadAbortRef.current?.abort();
+    const controller = new AbortController();
+    chatLoadAbortRef.current = controller;
+
+    try {
+      const response = await apiRequest<{ chat: Chat; messages: ChatMessage[] }>(`/chats/${chatID}/messages`, {
+        token: accessToken,
+        signal: controller.signal
+      });
+      if (chatLoadAbortRef.current === controller) {
+        setMessages(response.messages);
+      }
+    } catch (requestError) {
+      if (!isAbortError(requestError)) {
+        throw requestError;
+      }
+    } finally {
+      if (chatLoadAbortRef.current === controller) {
+        chatLoadAbortRef.current = null;
+      }
+    }
   }
 
   async function onSubmitAuth(event: FormEvent<HTMLFormElement>) {
@@ -464,11 +540,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       persistAccessToken(authResponse.access_token);
       setUser(authResponse.user);
 
-      const nextSettings = await apiRequest<UserSettings>("/me/settings", { token: authResponse.access_token });
+      const [nextSettings] = await Promise.all([
+        apiRequest<UserSettings>("/me/settings", { token: authResponse.access_token }),
+        loadWorkspace(authResponse.access_token, authResponse.user),
+        bootstrapChats(authResponse.access_token)
+      ]);
       setSettings(nextSettings);
-
-      await loadWorkspace(authResponse.access_token, authResponse.user);
-      await bootstrapChats(authResponse.access_token);
 
       setMessage(
         mode === "register"
@@ -674,10 +751,13 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setMessage("");
     setChatError("");
     setDraftMessage("");
-    setStreamingAssistant("");
+    resetStreamingAssistant();
     setMessages((current) => [...current, optimisticUserMessage]);
     let persistedUserMessageID = "";
     const localAssistantErrorID = `${optimisticMessageID}-error`;
+    chatStreamAbortRef.current?.abort();
+    const streamController = new AbortController();
+    chatStreamAbortRef.current = streamController;
 
     try {
       const payload: Record<string, unknown> = {
@@ -690,6 +770,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       }
 
       const response = await streamChatMessage(activeChatID, payload, token, {
+        signal: streamController.signal,
         onUserMessage(nextMessage) {
           persistedUserMessageID = nextMessage.id;
           setMessages((current) => {
@@ -709,7 +790,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
           });
         },
         onAssistantDelta(delta) {
-          setStreamingAssistant((current) => current + delta);
+          queueStreamingAssistantDelta(delta);
         }
       });
 
@@ -726,11 +807,14 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
         }
         return nextMessages;
       });
-      setStreamingAssistant("");
+      resetStreamingAssistant();
       // Refresh list so sidebar ordering stays accurate, but keep active chat and local messages.
-      await refreshChats(token);
+      void refreshChats(token).catch(() => {});
     } catch (requestError) {
-      setStreamingAssistant("");
+      resetStreamingAssistant();
+      if (isAbortError(requestError)) {
+        return;
+      }
       const failedMessageID = typeof persistedUserMessageID === "string" && persistedUserMessageID !== ""
         ? persistedUserMessageID
         : optimisticMessageID;
@@ -765,6 +849,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       });
       setChatError(reason);
     } finally {
+      if (chatStreamAbortRef.current === streamController) {
+        chatStreamAbortRef.current = null;
+      }
       setIsBusy(false);
       setIsStreamingMessage(false);
       queueMicrotask(() => composerRef.current?.focus());
@@ -988,6 +1075,10 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   }
 
   function clearSession() {
+    chatLoadAbortRef.current?.abort();
+    chatLoadAbortRef.current = null;
+    chatStreamAbortRef.current?.abort();
+    chatStreamAbortRef.current = null;
     window.localStorage.removeItem(accessTokenStorageKey);
     setToken("");
     setUser(null);
@@ -1009,7 +1100,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setActiveChatID("");
     setMessages([]);
     setDraftMessage("");
-    setStreamingAssistant("");
+    resetStreamingAssistant();
     setIsStreamingMessage(false);
   }
 
@@ -2185,7 +2276,8 @@ async function apiRequest<T = unknown>(path: string, options: RequestOptions = {
       ...(options.token ? { Authorization: `Bearer ${options.token}` } : {})
     },
     credentials: "include",
-    body: options.body ? JSON.stringify(options.body) : undefined
+    body: options.body ? JSON.stringify(options.body) : undefined,
+    signal: options.signal
   });
 
   const payload = await response.json().catch(() => ({}));
@@ -2221,6 +2313,7 @@ async function streamChatMessage(
   body: Record<string, unknown>,
   token: string,
   handlers: {
+    signal?: AbortSignal;
     onUserMessage: (message: ChatMessage) => void;
     onAssistantDelta: (delta: string) => void;
   }
@@ -2232,7 +2325,8 @@ async function streamChatMessage(
       Authorization: `Bearer ${token}`
     },
     credentials: "include",
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal: handlers.signal
   });
 
   if (!response.ok) {
@@ -2326,6 +2420,10 @@ function parseSSEEvent(rawChunk: string): { event: string; data: string } | null
     event,
     data: dataLines.join("\n")
   };
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 function errorMessage(value: unknown): string {

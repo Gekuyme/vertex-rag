@@ -40,3 +40,24 @@ func TestChunkDocumentText_PDFAddsPageMetadata(t *testing.T) {
 		t.Fatalf("expected page_end metadata=2, got %#v", chunks[0].Metadata["page_end"])
 	}
 }
+
+func TestClassifyChunkKind_Definition(t *testing.T) {
+	kind := classifyChunkKind("Строка в Go — это неизменяемая последовательность байтов.")
+	if kind != "definition" {
+		t.Fatalf("expected definition kind, got %q", kind)
+	}
+}
+
+func TestClassifyChunkKind_Procedure(t *testing.T) {
+	kind := classifyChunkKind("Шаги настройки:\n1. Откройте панель.\n2. Нажмите Сохранить.\n3. Проверьте результат.")
+	if kind != "procedure" {
+		t.Fatalf("expected procedure kind, got %q", kind)
+	}
+}
+
+func TestClassifyChunkKind_Policy(t *testing.T) {
+	kind := classifyChunkKind("Пользователь должен использовать SSO. Передача пароля третьим лицам запрещена.")
+	if kind != "policy" {
+		t.Fatalf("expected policy kind, got %q", kind)
+	}
+}
