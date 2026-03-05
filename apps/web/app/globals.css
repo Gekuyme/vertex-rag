@@ -650,6 +650,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   margin: 0; /* right align container override */
 }
 
+.chatMessageRow.isFailed .chatBubble {
+  border-color: var(--danger-border);
+}
+
 .chatMessageRow.fromAssistant .chatBubble {
   border: none;
   background: transparent;
@@ -863,6 +867,17 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   box-shadow: 0 0 0 3px var(--focus);
 }
 
+.composerInlineError {
+  color: var(--danger-text);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 0.9rem;
+  line-height: 1.3;
+  white-space: pre-wrap;
+}
+
 .composerInput {
   flex: 1;
   border: none;
@@ -877,6 +892,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .composerInput:focus-visible {
   outline: none;
   box-shadow: none; /* using composerCard styling instead */
+}
+
+.chatBubbleHint {
+  margin-top: 10px;
+  font-size: 0.86rem;
+  line-height: 1.35;
+  color: var(--muted);
 }
 
 .composerBottomRow {
@@ -920,6 +942,15 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .modeToggleCompact .modeToggleItem {
   padding: 5px 10px;
   font-size: 0.78rem;
+}
+
+.modeToggleHint {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 0.78rem;
+  color: var(--muted);
 }
 
 
@@ -1124,6 +1155,120 @@ tbody tr:hover { background: var(--surface-hover); }
   gap: 10px;
 }
 
+.onboardingOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 220;
+  background: rgba(8, 12, 20, 0.46);
+  animation: onboardingFadeIn 0.24s ease;
+}
+
+.onboardingHighlight {
+  position: fixed;
+  border-radius: 14px;
+  border: 1px solid color-mix(in oklab, var(--primary) 55%, white);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.75),
+    0 12px 30px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  animation: onboardingPulse 1.8s ease-in-out infinite;
+}
+
+.onboardingTargetActive {
+  position: relative;
+  z-index: 225;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--primary) 52%, white);
+  border-radius: 10px;
+}
+
+.onboardingCard {
+  position: fixed;
+  width: min(360px, calc(100% - 24px));
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-glass);
+  padding: 14px;
+  color: var(--text);
+  animation: onboardingCardIn 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.onboardingStep {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.onboardingCard h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+.onboardingCard p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+  font-size: 0.88rem;
+}
+
+.onboardingDots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 10px;
+}
+
+.onboardingDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
+}
+
+.onboardingDot.active {
+  background: var(--primary);
+}
+
+.onboardingActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.onboardingActionsRight {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+@keyframes onboardingFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes onboardingCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes onboardingPulse {
+  0%, 100% {
+    border-color: color-mix(in oklab, var(--primary) 42%, white);
+  }
+  50% {
+    border-color: color-mix(in oklab, var(--primary) 70%, white);
+  }
+}
+
 .settingsModalNavVertical {
   grid-template-columns: 1fr;
   align-content: start;
@@ -1241,6 +1386,33 @@ tbody tr:hover { background: var(--surface-hover); }
   justify-self: end;
   min-width: 170px;
   margin-top: 2px;
+}
+
+.uploadInlineFeedback {
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 0.8rem;
+  line-height: 1.3;
+  margin: 0;
+}
+
+.uploadInlineFeedbackError {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
+}
+
+.uploadInlineFeedbackSuccess {
+  background: var(--success-bg);
+  border: 1px solid var(--success-border);
+  color: var(--success-text);
+}
+
+.uploadHint {
+  margin: -4px 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-align: right;
 }
 
 

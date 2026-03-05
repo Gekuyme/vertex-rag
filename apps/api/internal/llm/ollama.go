@@ -14,17 +14,18 @@ import (
 )
 
 type ollamaProvider struct {
-	baseURL         string
-	baseURLStrict   string
-	baseURLUnstrict string
-	model           string
-	modelStrict     string
-	modelUnstrict   string
-	numCtx          int
-	keepAlive       string
-	httpClient      *http.Client
-	maxRetries      int
-	retryBackoff    time.Duration
+	baseURL          string
+	baseURLStrict    string
+	baseURLUnstrict  string
+	model            string
+	modelStrict      string
+	modelUnstrict    string
+	numCtx           int
+	keepAlive        string
+	httpClient       *http.Client
+	streamHTTPClient *http.Client
+	maxRetries       int
+	retryBackoff     time.Duration
 }
 
 type ollamaCompletionRequest struct {
@@ -79,17 +80,18 @@ func newOllamaProvider(
 	}
 
 	return &ollamaProvider{
-		baseURL:         base,
-		baseURLStrict:   strict,
-		baseURLUnstrict: unstrict,
-		model:           strings.TrimSpace(model),
-		modelStrict:     strings.TrimSpace(modelStrict),
-		modelUnstrict:   strings.TrimSpace(modelUnstrict),
-		numCtx:          numCtx,
-		keepAlive:       strings.TrimSpace(keepAlive),
-		httpClient:      &http.Client{Timeout: httpTimeout},
-		maxRetries:      maxRetries,
-		retryBackoff:    retryBackoff,
+		baseURL:          base,
+		baseURLStrict:    strict,
+		baseURLUnstrict:  unstrict,
+		model:            strings.TrimSpace(model),
+		modelStrict:      strings.TrimSpace(modelStrict),
+		modelUnstrict:    strings.TrimSpace(modelUnstrict),
+		numCtx:           numCtx,
+		keepAlive:        strings.TrimSpace(keepAlive),
+		httpClient:       &http.Client{Timeout: httpTimeout},
+		streamHTTPClient: &http.Client{},
+		maxRetries:       maxRetries,
+		retryBackoff:     retryBackoff,
 	}
 }
 
@@ -162,7 +164,7 @@ func (p *ollamaProvider) Complete(ctx context.Context, request CompletionRequest
 			return nil, fmt.Errorf("create ollama completion request: %w", createErr)
 		}
 		httpRequest.Header.Set("Content-Type", "application/json")
-		return p.httpClient.Do(httpRequest)
+		return p.streamHTTPClient.Do(httpRequest)
 	})
 	if err != nil {
 		return "", fmt.Errorf("ollama completion request failed: %w", err)

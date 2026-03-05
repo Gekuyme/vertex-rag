@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 
 	"github.com/Gekuyme/vertex-rag/apps/worker/internal/embeddings"
 	"github.com/Gekuyme/vertex-rag/apps/worker/internal/queue"
@@ -77,14 +79,14 @@ func (p *Processor) ingestDocument(ctx context.Context, document store.DocumentF
 		return fmt.Errorf("extract text: %w", err)
 	}
 
-	chunks := chunkText(text)
+	chunks := chunkDocumentText(text, document.MIME, document.Filename)
 	if len(chunks) == 0 {
 		return errors.New("no chunks generated")
 	}
 
 	chunkTexts := make([]string, 0, len(chunks))
 	for _, chunk := range chunks {
-		chunkTexts = append(chunkTexts, chunk.Content)
+		chunkTexts = append(chunkTexts, buildEmbeddingInput(document.Filename, chunk))
 	}
 
 	vectors, err := p.embeddings.Embed(ctx, chunkTexts)
@@ -104,4 +106,40 @@ func (p *Processor) ingestDocument(ctx context.Context, document store.DocumentF
 	}
 
 	return nil
+}
+
+func buildEmbeddingInput(filename string, chunk store.ChunkInput) string {
+	content := strings.TrimSpace(chunk.Content)
+	if content == "" {
+		return ""
+	}
+
+	lines := make([]string, 0, 4)
+	if name := strings.TrimSpace(filename); name != "" {
+		lines = append(lines, "Document: "+name)
+	}
+	if section, ok := chunk.Metadata["section"].(string); ok {
+		section = strings.TrimSpace(section)
+		if section != "" {
+			lines = append(lines, "Section: "+section)
+		}
+	}
+	if page, ok := metadataInt(chunk.Metadata["page"]); ok {
+		lines = append(lines, "Page: "+strconv.Itoa(page))
+	}
+	lines = append(lines, content)
+	return strings.Join(lines, "\n")
+}
+
+func metadataInt(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	default:
+		return 0, false
+	}
 }

@@ -6,7 +6,7 @@ COMPOSE_SELFHOST := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE)
 
 .PHONY: help up up-core up-build rebuild rebuild-web rebuild-api rebuild-worker down ps logs logs-api logs-web logs-worker \
 	stop-web \
-	migrate migrate-extensions migrate-auth migrate-docs migrate-kb-version migrate-embedding-vector migrate-chat-settings \
+	migrate migrate-extensions migrate-auth migrate-docs migrate-kb-version migrate-embedding-vector migrate-chat-settings migrate-unstrict-backfill reingest-all \
 	test test-api test-worker test-integration test-integration-acl test-integration-mode test-integration-pdf test-integration-retrieval test-integration-cache \
 	test-e2e \
 	build-web dev-web health smoke-role-acl smoke-mode-toggle smoke-pdf-ingest smoke-retrieval-stability smoke-cache-speed up-selfhost pull-selfhost
@@ -30,6 +30,7 @@ help:
 	@echo "  make logs-web            - Tail Web logs"
 	@echo "  make logs-worker         - Tail Worker logs"
 	@echo "  make migrate             - Apply all SQL migrations"
+	@echo "  make reingest-all        - Queue reingest for every document"
 	@echo "  make test                - Run API and Worker tests"
 	@echo "  make test-e2e            - Run Playwright e2e smoke test"
 	@echo "  make test-integration    - Run integration test suite"
@@ -95,7 +96,7 @@ logs-web:
 logs-worker:
 	$(COMPOSE) logs -f worker
 
-migrate: migrate-extensions migrate-auth migrate-docs migrate-kb-version migrate-embedding-vector migrate-chat-settings
+migrate: migrate-extensions migrate-auth migrate-docs migrate-kb-version migrate-embedding-vector migrate-chat-settings migrate-unstrict-backfill
 
 migrate-extensions:
 	cat db/migrations/000001_enable_extensions.up.sql | $(COMPOSE) exec -T postgres psql -U vertex -d vertex_rag
@@ -114,6 +115,13 @@ migrate-embedding-vector:
 
 migrate-chat-settings:
 	cat db/migrations/000006_chat_settings.up.sql | $(COMPOSE) exec -T postgres psql -U vertex -d vertex_rag
+
+migrate-unstrict-backfill:
+	cat db/migrations/000007_backfill_can_use_unstrict.up.sql | $(COMPOSE) exec -T postgres psql -U vertex -d vertex_rag
+
+reingest-all:
+	@token="$$(curl -fsS -X POST http://localhost:8080/auth/login -H "Content-Type: application/json" -d "{\"email\":\"$${OWNER_EMAIL:-owner@vertex.local}\",\"password\":\"$${OWNER_PASSWORD:-Password123!}\"}" | jq -r '.access_token')" && \
+	curl -fsS -X POST http://localhost:8080/documents/reingest_all -H "Authorization: Bearer $$token"
 
 test: test-api test-worker
 

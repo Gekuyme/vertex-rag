@@ -8,6 +8,11 @@ const accessTokenStorageKey = "vertex_access_token";
 
 type ConsoleView = "chat" | "knowledge" | "users" | "account";
 type SettingsTab = "knowledge" | "users" | "roles" | "account";
+type OnboardingStep = {
+  selector: string;
+  title: string;
+  description: string;
+};
 
 type User = {
   id: string;
@@ -79,6 +84,7 @@ type ChatMessage = {
   content: string;
   citations: Citation[];
   created_at: string;
+  client_status?: "pending" | "failed";
 };
 
 type RequestOptions = {
@@ -106,6 +112,34 @@ const rolePermissionOptions = [
   { key: "can_toggle_web_search", label: "Web-search в unstrict" },
   { key: "can_use_unstrict", label: "Использование unstrict" }
 ] as const;
+const onboardingSeenStorageKey = "vertex_onboarding_seen_v1";
+const onboardingSteps: OnboardingStep[] = [
+  {
+    selector: '[data-tour="chat-nav"]',
+    title: "Навигация по чатам",
+    description: "Здесь список ваших диалогов. Переключайтесь между ними одним кликом."
+  },
+  {
+    selector: '[data-tour="chat-create"]',
+    title: "Новый чат",
+    description: "Нажмите плюс, чтобы быстро создать новый диалог."
+  },
+  {
+    selector: '[data-tour="settings-btn"]',
+    title: "Настройки",
+    description: "В настройках доступны аккаунт, роли, база знаний и выход."
+  },
+  {
+    selector: '[data-tour="upload-btn"]',
+    title: "Загрузка файла",
+    description: "Через эту кнопку открывается окно загрузки документа в базу знаний."
+  },
+  {
+    selector: '[data-tour="mode-toggle"]',
+    title: "Режим ответа",
+    description: "Выбирайте Строгий или Нестрогий режим ответа для текущего сообщения."
+  }
+];
 
 export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -139,6 +173,10 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const [isStreamingMessage, setIsStreamingMessage] = useState(false);
   const [isCitationPreviewOpen, setIsCitationPreviewOpen] = useState(false);
   const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
+  const [onboardingStepIndex, setOnboardingStepIndex] = useState(0);
+  const [onboardingRect, setOnboardingRect] = useState<DOMRect | null>(null);
+  const [onboardingCardPosition, setOnboardingCardPosition] = useState<{ top: number; left: number } | null>(null);
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -146,6 +184,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const [isBusy, setIsBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [chatError, setChatError] = useState("");
 
   const [organizationName, setOrganizationName] = useState("");
   const [email, setEmail] = useState("");
@@ -168,9 +207,21 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     () => Boolean(user?.permissions?.includes("can_toggle_web_search")),
     [user]
   );
+  const canUseUnstrict = useMemo(
+    () => Boolean(user?.permissions?.includes("can_use_unstrict")),
+    [user]
+  );
+  const canAccessUnstrict = canUseUnstrict || canToggleWebSearch;
+  const isUploadReady = Boolean(selectedFile) && selectedRoleIDs.length > 0 && !isBusy;
+  const uploadHint = !selectedFile
+    ? "Выберите файл для загрузки."
+    : selectedRoleIDs.length === 0
+      ? "Выберите хотя бы одну роль доступа."
+      : "";
   const isSettingsModalPresent = useModalPresence(isSettingsOpen, modalAnimationMs);
   const isUploadModalPresent = useModalPresence(isUploadModalOpen, modalAnimationMs);
   const isCitationPreviewPresent = useModalPresence(isCitationPreviewOpen, modalAnimationMs);
+  const currentOnboardingStep = onboardingSteps[onboardingStepIndex] || null;
 
   useEffect(() => {
     const storedToken = window.localStorage.getItem(accessTokenStorageKey);
@@ -190,11 +241,21 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
     // Sync chat mode selector with user default.
     if (settings?.default_mode) {
+      if (settings.default_mode === "unstrict" && !canAccessUnstrict) {
+        setMessageMode("strict");
+        return;
+      }
       setMessageMode(settings.default_mode);
     } else {
       setMessageMode("strict");
     }
-  }, [user, settings?.default_mode]);
+  }, [canAccessUnstrict, settings?.default_mode, user]);
+
+  useEffect(() => {
+    if (messageMode === "unstrict" && !canAccessUnstrict) {
+      setMessageMode("strict");
+    }
+  }, [canAccessUnstrict, messageMode]);
 
   useEffect(() => {
     // Keep the latest message visible when chatting.
@@ -225,6 +286,67 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isSettingsOpen, isUploadModalOpen, isCitationPreviewOpen]);
+
+  useEffect(() => {
+    if (!user || view !== "chat") {
+      return;
+    }
+    const hasSeenOnboarding = window.localStorage.getItem(onboardingSeenStorageKey) === "1";
+    if (!hasSeenOnboarding) {
+      setOnboardingStepIndex(0);
+      setIsOnboardingOpen(true);
+    }
+  }, [user, view]);
+
+  useEffect(() => {
+    if (!isOnboardingOpen || !currentOnboardingStep) {
+      return;
+    }
+    let activeTarget: HTMLElement | null = null;
+
+    function refreshOnboardingRect() {
+      const target = document.querySelector(currentOnboardingStep.selector) as HTMLElement | null;
+      if (!target) {
+        activeTarget?.classList.remove("onboardingTargetActive");
+        activeTarget = null;
+        setOnboardingRect(null);
+        setOnboardingCardPosition(null);
+        return;
+      }
+      if (activeTarget !== target) {
+        activeTarget?.classList.remove("onboardingTargetActive");
+        activeTarget = target;
+        activeTarget.classList.add("onboardingTargetActive");
+      }
+      const rect = target.getBoundingClientRect();
+      setOnboardingRect(rect);
+      const margin = 12;
+      const cardWidth = Math.min(360, window.innerWidth - margin * 2);
+      const estimatedCardHeight = 230;
+      const maxTop = Math.max(margin, window.innerHeight - estimatedCardHeight - margin);
+      let top = rect.bottom + 14;
+      if (top > maxTop) {
+        top = rect.top - estimatedCardHeight - 14;
+      }
+      top = Math.max(margin, Math.min(top, maxTop));
+      const preferredLeft = rect.left + rect.width / 2 - cardWidth / 2;
+      const maxLeft = Math.max(margin, window.innerWidth - cardWidth - margin);
+      const left = Math.max(margin, Math.min(preferredLeft, maxLeft));
+      setOnboardingCardPosition({ top, left });
+    }
+
+    refreshOnboardingRect();
+    const target = document.querySelector(currentOnboardingStep.selector) as HTMLElement | null;
+    target?.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+
+    window.addEventListener("resize", refreshOnboardingRect);
+    window.addEventListener("scroll", refreshOnboardingRect, true);
+    return () => {
+      activeTarget?.classList.remove("onboardingTargetActive");
+      window.removeEventListener("resize", refreshOnboardingRect);
+      window.removeEventListener("scroll", refreshOnboardingRect, true);
+    };
+  }, [currentOnboardingStep, isOnboardingOpen]);
 
   async function hydrateSession(accessToken: string) {
     try {
@@ -425,6 +547,8 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
       setSelectedFile(null);
       setDocumentTitle("");
+      setSelectedRoleIDs([]);
+      setIsUploadModalOpen(false);
       setMessage("Документ загружен и отправлен в индексацию.");
     } catch (requestError) {
       setError(errorMessage(requestError));
@@ -541,16 +665,19 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       mode: messageMode,
       content,
       citations: [],
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      client_status: "pending"
     };
 
     setIsBusy(true);
     setIsStreamingMessage(true);
     setMessage("");
-    setError("");
+    setChatError("");
     setDraftMessage("");
     setStreamingAssistant("");
     setMessages((current) => [...current, optimisticUserMessage]);
+    let persistedUserMessageID = "";
+    const localAssistantErrorID = `${optimisticMessageID}-error`;
 
     try {
       const payload: Record<string, unknown> = {
@@ -564,6 +691,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
       const response = await streamChatMessage(activeChatID, payload, token, {
         onUserMessage(nextMessage) {
+          persistedUserMessageID = nextMessage.id;
           setMessages((current) => {
             let didReplaceOptimistic = false;
             const replaced = current.map((entry) => {
@@ -573,10 +701,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               }
               return entry;
             });
-            if (replaced.some((entry) => entry.id === nextMessage.id)) {
-              return replaced;
+            const withoutLocalError = replaced.filter((entry) => entry.id !== localAssistantErrorID);
+            if (withoutLocalError.some((entry) => entry.id === nextMessage.id)) {
+              return withoutLocalError;
             }
-            return didReplaceOptimistic ? replaced : [...replaced, nextMessage];
+            return didReplaceOptimistic ? withoutLocalError : [...withoutLocalError, nextMessage];
           });
         },
         onAssistantDelta(delta) {
@@ -602,8 +731,39 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       await refreshChats(token);
     } catch (requestError) {
       setStreamingAssistant("");
-      setMessages((current) => current.filter((entry) => entry.id !== optimisticMessageID));
-      setError(errorMessage(requestError));
+      const failedMessageID = typeof persistedUserMessageID === "string" && persistedUserMessageID !== ""
+        ? persistedUserMessageID
+        : optimisticMessageID;
+      const reason = errorMessage(requestError);
+      setMessages((current) => {
+        const localAssistantErrorID = `${optimisticMessageID}-error`;
+        const nextMessages = current.map((entry) =>
+          entry.id === failedMessageID
+            ? {
+                ...entry,
+                client_status: "failed" as const
+              }
+            : entry
+        );
+        if (nextMessages.some((entry) => entry.id === localAssistantErrorID)) {
+          return nextMessages;
+        }
+        const localAssistantErrorMessage: ChatMessage = {
+          id: localAssistantErrorID,
+          chat_id: activeChatID,
+          role: "assistant",
+          mode: messageMode,
+          content: `Ошибка запроса: ${reason}`,
+          citations: [],
+          created_at: new Date().toISOString(),
+          client_status: "failed"
+        };
+        return [
+          ...nextMessages,
+          localAssistantErrorMessage
+        ];
+      });
+      setChatError(reason);
     } finally {
       setIsBusy(false);
       setIsStreamingMessage(false);
@@ -782,6 +942,25 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setIsCitationPreviewOpen(false);
   }
 
+  function closeOnboarding(markAsSeen = true) {
+    setIsOnboardingOpen(false);
+    if (markAsSeen) {
+      window.localStorage.setItem(onboardingSeenStorageKey, "1");
+    }
+  }
+
+  function onNextOnboardingStep() {
+    if (onboardingStepIndex >= onboardingSteps.length - 1) {
+      closeOnboarding(true);
+      return;
+    }
+    setOnboardingStepIndex((current) => Math.min(current + 1, onboardingSteps.length - 1));
+  }
+
+  function onPrevOnboardingStep() {
+    setOnboardingStepIndex((current) => Math.max(current - 1, 0));
+  }
+
   function toggleUploadRole(roleID: number) {
     setSelectedRoleIDs((current) =>
       current.includes(roleID) ? current.filter((id) => id !== roleID) : [...current, roleID]
@@ -932,11 +1111,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                 </div>
               </div>
 
-              <div className="sidebarSection">
+              <div className="sidebarSection" data-tour="chat-nav">
                 <div className="sidebarSectionHeader">
                   <div className="sidebarSectionTitle">Чаты</div>
                   <div className="iconBtnRow">
-                    <button type="button" className="iconCreateBtn" onClick={() => void onCreateChat()} aria-label="Создать чат">
+                    <button type="button" className="iconCreateBtn" onClick={() => void onCreateChat()} aria-label="Создать чат" data-tour="chat-create">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                     </button>
                   </div>
@@ -962,6 +1141,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                   type="button"
                   className="btn btnSecondary btnSmall sidebarSettingsBtn"
                   aria-label="Открыть настройки"
+                  data-tour="settings-btn"
                   onClick={() => {
                     setSettingsTab("account");
                     setIsSettingsOpen(true);
@@ -1018,7 +1198,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                     {messages.map((entry) => (
                       <div
                         key={entry.id}
-                        className={`chatMessageRow ${entry.role === "user" ? "fromUser" : "fromAssistant"}`}
+                        className={`chatMessageRow ${entry.role === "user" ? "fromUser" : "fromAssistant"} ${entry.client_status === "failed" ? "isFailed" : ""}`}
                       >
                         <div className="chatBubble">
                           <div className="chatBubbleMeta">
@@ -1026,6 +1206,18 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                             <span className="chatMode">{entry.mode}</span>
                           </div>
                           <div className="chatBubbleContent">{entry.content}</div>
+                          {entry.role === "user" && entry.client_status === "failed" && (
+                            <div className="chatBubbleHint">Сообщение не доставлено. Исправьте причину ошибки и отправьте заново.</div>
+                          )}
+                          {entry.role === "assistant" &&
+                            entry.mode === "strict" &&
+                            entry.content.trim() === "Недостаточно данных в базе знаний." &&
+                            (entry.citations?.length || 0) === 0 && (
+                              <div className="chatBubbleHint">
+                                Нет релевантных источников в базе знаний для этой роли. Проверьте доступ к документу (allowed roles) или загрузите
+                                документ с нужными правами.
+                              </div>
+                            )}
                           {entry.role === "assistant" && entry.citations?.length > 0 && (
                             <details className="details">
                               <summary className="detailsSummary">Источники</summary>
@@ -1075,6 +1267,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                   <div className="composerCloud" aria-hidden="true" />
                   <form className="composer" onSubmit={(event) => void onSendMessage(event)}>
                     <div className="composerCard">
+                      {chatError && (
+                        <div className="composerInlineError" role="alert">
+                          {chatError}
+                        </div>
+                      )}
                       <textarea
                         ref={composerRef}
                         value={draftMessage}
@@ -1100,10 +1297,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                             className="iconCreateBtn composerActionBtn"
                             onClick={() => setIsUploadModalOpen(true)}
                             aria-label="Загрузить файл"
+                            data-tour="upload-btn"
                           >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                           </button>
-                          <div className="modeToggle modeToggleCompact" role="tablist" aria-label="Режим ответа">
+                          <div className="modeToggle modeToggleCompact" role="tablist" aria-label="Режим ответа" data-tour="mode-toggle">
                             <button
                               type="button"
                               className={`modeToggleItem ${messageMode === "strict" ? "active" : ""}`}
@@ -1111,15 +1309,17 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                             >
                               Строгий
                             </button>
-                            <button
-                              type="button"
-                              className={`modeToggleItem ${messageMode === "unstrict" ? "active" : ""}`}
-                              onClick={() => setMessageMode("unstrict")}
-                              disabled={!canToggleWebSearch}
-                              title={!canToggleWebSearch ? "Ваша роль не может использовать нестрогий режим." : undefined}
-                            >
-                              Нестрогий
-                            </button>
+                            {canAccessUnstrict ? (
+                              <button
+                                type="button"
+                                className={`modeToggleItem ${messageMode === "unstrict" ? "active" : ""}`}
+                                onClick={() => setMessageMode("unstrict")}
+                              >
+                                Нестрогий
+                              </button>
+                            ) : (
+                              <span className="modeToggleHint">Роль не разрешает unstrict</span>
+                            )}
                           </div>
                         </div>
 
@@ -1425,15 +1625,18 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                         >
                           Строгий
                         </button>
-                        <button
-                          type="button"
-                          className={`modeToggleItem ${(settings?.default_mode || "strict") === "unstrict" ? "active" : ""}`}
-                          onClick={() => void onUpdateDefaultMode("unstrict")}
-                          disabled={isBusy || !canToggleWebSearch}
-                          title={!canToggleWebSearch ? "Ваша роль не может использовать нестрогий режим." : undefined}
-                        >
-                          Нестрогий
-                        </button>
+                        {canAccessUnstrict ? (
+                          <button
+                            type="button"
+                            className={`modeToggleItem ${(settings?.default_mode || "strict") === "unstrict" ? "active" : ""}`}
+                            onClick={() => void onUpdateDefaultMode("unstrict")}
+                            disabled={isBusy}
+                          >
+                            Нестрогий
+                          </button>
+                        ) : (
+                          <span className="modeToggleHint">Роль не разрешает unstrict</span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1747,15 +1950,18 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                               >
                                 Строгий
                               </button>
-                              <button
-                                type="button"
-                                className={`modeToggleItem ${(settings?.default_mode || "strict") === "unstrict" ? "active" : ""}`}
-                                onClick={() => void onUpdateDefaultMode("unstrict")}
-                                disabled={isBusy || !canToggleWebSearch}
-                                title={!canToggleWebSearch ? "Ваша роль не может использовать нестрогий режим." : undefined}
-                              >
-                                Нестрогий
-                              </button>
+                              {canAccessUnstrict ? (
+                                <button
+                                  type="button"
+                                  className={`modeToggleItem ${(settings?.default_mode || "strict") === "unstrict" ? "active" : ""}`}
+                                  onClick={() => void onUpdateDefaultMode("unstrict")}
+                                  disabled={isBusy}
+                                >
+                                  Нестрогий
+                                </button>
+                              ) : (
+                                <span className="modeToggleHint">Роль не разрешает unstrict</span>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -1789,6 +1995,8 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               <div className="settingsModalContent settingsModalContentUpload">
                 {canUploadDocs ? (
                   <form className="formGrid uploadFormCompact" onSubmit={onUploadDocument}>
+                    {error && <div className="uploadInlineFeedback uploadInlineFeedbackError">{error}</div>}
+                    {message && <div className="uploadInlineFeedback uploadInlineFeedbackSuccess">{message}</div>}
                     <label className="uploadField">
                       Название (необязательно)
                       <input
@@ -1820,9 +2028,10 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                         ))}
                       </div>
                     </fieldset>
-                    <button type="submit" className="btn btnPrimary" disabled={isBusy}>
+                    <button type="submit" className="btn btnPrimary" disabled={!isUploadReady}>
                       {isBusy ? "Загрузка..." : "Загрузить документ"}
                     </button>
+                    {uploadHint && <p className="uploadHint">{uploadHint}</p>}
                   </form>
                 ) : (
                   <p className="notice">У текущего пользователя нет прав на загрузку.</p>
@@ -1880,6 +2089,61 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                     }}
                   >
                     Перейти к базе знаний
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {user && isOnboardingOpen && currentOnboardingStep && (
+          <div className="onboardingOverlay" role="dialog" aria-modal="true" aria-label="Онбординг">
+            {onboardingRect && (
+              <div
+                className="onboardingHighlight"
+                style={{
+                  top: onboardingRect.top - 8,
+                  left: onboardingRect.left - 8,
+                  width: onboardingRect.width + 16,
+                  height: onboardingRect.height + 16
+                }}
+              />
+            )}
+            <div
+              className="onboardingCard"
+              style={
+                onboardingCardPosition
+                  ? {
+                      top: onboardingCardPosition.top,
+                      left: onboardingCardPosition.left
+                    }
+                  : {
+                      top: "50%",
+                      left: "50%",
+                      transform: "translate(-50%, -50%)"
+                    }
+              }
+            >
+              <div className="onboardingStep">
+                Шаг {onboardingStepIndex + 1} из {onboardingSteps.length}
+              </div>
+              <h3>{currentOnboardingStep.title}</h3>
+              <p>{currentOnboardingStep.description}</p>
+              <div className="onboardingDots" aria-hidden="true">
+                {onboardingSteps.map((step, index) => (
+                  <span key={step.selector} className={`onboardingDot ${index === onboardingStepIndex ? "active" : ""}`} />
+                ))}
+              </div>
+              <div className="onboardingActions">
+                <button type="button" className="btn btnSecondary btnSmall" onClick={() => closeOnboarding(true)}>
+                  Пропустить
+                </button>
+                <div className="onboardingActionsRight">
+                  <button type="button" className="btn btnSecondary btnSmall" onClick={onPrevOnboardingStep} disabled={onboardingStepIndex === 0}>
+                    Назад
+                  </button>
+                  <button type="button" className="btn btnPrimary btnSmall" onClick={onNextOnboardingStep}>
+                    {onboardingStepIndex === onboardingSteps.length - 1 ? "Готово" : "Далее"}
                   </button>
                 </div>
               </div>
@@ -1985,6 +2249,7 @@ async function streamChatMessage(
   const decoder = new TextDecoder();
   let buffer = "";
   let donePayload: StreamDonePayload | null = null;
+  let streamError = "";
 
   while (true) {
     const chunk = await reader.read();
@@ -2017,9 +2282,16 @@ async function streamChatMessage(
       if (parsed.event === "done") {
         donePayload = JSON.parse(parsed.data) as StreamDonePayload;
       }
+      if (parsed.event === "error") {
+        const payload = JSON.parse(parsed.data) as { error?: string };
+        streamError = payload.error || "Stream failed";
+      }
     }
   }
 
+  if (streamError) {
+    throw new Error(streamError);
+  }
   if (!donePayload) {
     throw new Error("Stream finished without done event");
   }

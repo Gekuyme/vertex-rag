@@ -77,6 +77,26 @@
   - [x] Web-search модуль (опционально, feature-flag).
 - [x] **Критерий готовности:** переключение в UI не влияет на in-flight стрим, влияет только на следующий запрос.
 
+## Quality pass — Ingestion + answering (качество/надежность)
+- [x] PDF: извлечение `pdftotext` с UTF-8 + page metadata из `\f` разрывов.
+- [x] Markdown: section metadata по ближайшему `#...` heading (для retrieval/citations).
+- [x] Нормализация текста: сохранить списки/таблицы/кодовые блоки, склейка переносов и `exam-\nple`.
+- [x] Чанкинг: предпочтение границ абзацев (`\n\n`) при разрезе.
+- [x] DOCX: сбор текста по параграфам (сохранить структуру, без “newline per run”).
+- [x] Strict guard: проверять прямые цитаты по полному тексту retrieved chunk (не по усеченному snippet).
+- [x] Unstrict: поддержка ссылок на web-контекст через `[Wn]` (например: `[W1]`).
+- [x] Embeddings: ускорение Ollama через параллельные запросы + embedding input с `Document/Section/Page`.
+- [x] Regression: `make test-integration` проходит.
+
+## Stabilization pass — RAG/Strict/Unstrict hardening
+- [x] Backfill прав `can_use_unstrict` для существующих ролей и временная legacy-совместимость через `UNSTRICT_LEGACY_TOGGLE_WEB_SEARCH`.
+- [x] UI больше не скрывает ошибку `unstrict`: сообщение пользователя остается в чате, а причина показывается inline.
+- [x] Retrieval стал детерминированным: стабильные tie-breakers, candidate diversification per document и safe filter по `vector_dims(...)`.
+- [x] `/admin/retrieval/debug` использует тот же query-building, что и production chat, и возвращает `embed_query` + `text_query`.
+- [x] Strict больше не маскирует LLM transport/empty-output ошибки под fallback “Недостаточно данных...”.
+- [x] Нормализация soft hyphen / zero-width артефактов добавлена в ingestion и strict quote matching.
+- [x] Smoke-сценарий проверяет частый термин (`что такое строка`) и regression для `unstrict` RBAC.
+
 ## Milestone 6 — LLM Provider layer (сменность провайдера)
 - [x] Интерфейс `LLMProvider` (stream + non-stream).
 - [x] Реализации: `openai`, `ollama`.

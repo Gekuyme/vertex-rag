@@ -22,9 +22,10 @@ stable_token="stable_token_${timestamp}_vertex"
 restricted_token="restricted_token_${timestamp}_vertex"
 document_file="$(mktemp)"
 restricted_file="$(mktemp)"
+common_term_file="$(mktemp)"
 
 cleanup() {
-  rm -f "$document_file" "$restricted_file"
+  rm -f "$document_file" "$restricted_file" "$common_term_file"
 }
 trap cleanup EXIT
 
@@ -58,6 +59,25 @@ stable_document_id="$(printf '%s' "$upload_response" | jq -r '.id')"
 
 if [[ -z "$stable_document_id" || "$stable_document_id" == "null" ]]; then
   echo "failed to upload baseline document" >&2
+  exit 1
+fi
+
+cat >"$common_term_file" <<EOF
+Go string definition smoke document.
+Строка в Go - это неизменяемая последовательность байтов.
+Этот фрагмент должен находиться по запросу "что такое строка".
+EOF
+
+echo "==> Upload common-term document"
+common_term_upload_response="$(curl -fsS -X POST "${API_BASE_URL}/documents/upload" \
+  -H "Authorization: Bearer ${token}" \
+  -F "file=@${common_term_file};type=text/plain" \
+  -F "title=Go Strings Smoke Document" \
+  -F "allowed_role_ids=${owner_role_id}")"
+common_term_document_id="$(printf '%s' "$common_term_upload_response" | jq -r '.id')"
+
+if [[ -z "$common_term_document_id" || "$common_term_document_id" == "null" ]]; then
+  echo "failed to upload common-term document" >&2
   exit 1
 fi
 
@@ -111,6 +131,7 @@ wait_document_ready() {
 
 echo "==> Wait documents ready"
 wait_document_ready "$stable_document_id"
+wait_document_ready "$common_term_document_id"
 wait_document_ready "$restricted_document_id"
 
 echo "==> Validate retrieval stability"
@@ -133,6 +154,16 @@ if [[ -z "$ids_1" || "$ids_1" == "null" ]]; then
 fi
 if [[ "$ids_1" != "$ids_2" || "$ids_1" != "$ids_3" ]]; then
   echo "retrieval top chunks are unstable: ${ids_1} | ${ids_2} | ${ids_3}" >&2
+  exit 1
+fi
+
+echo "==> Validate common-term retrieval"
+common_term_hits="$(curl -fsS -X POST "${API_BASE_URL}/admin/retrieval/debug" \
+  -H "Authorization: Bearer ${token}" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"что такое строка","top_k":8,"candidate_k":32}' | jq -r --arg common_doc_id "$common_term_document_id" '[.citations[] | select(.document_id == $common_doc_id)] | length')"
+if [[ "${common_term_hits:-0}" -le 0 ]]; then
+  echo "common-term retrieval did not return uploaded go string document" >&2
   exit 1
 fi
 
@@ -184,4 +215,4 @@ curl -fsS -X PATCH "${API_BASE_URL}/admin/users/${user_id}/role" \
   -H "Content-Type: application/json" \
   -d "{\"role_id\":${owner_role_id}}" >/dev/null
 
-echo "Retrieval stability smoke passed: ids=${ids_1}; unstrict total citations before=${citations_before}, after=${citations_after}, restricted before=${restricted_before_count}, restricted after=${restricted_after_count}"
+echo "Retrieval stability smoke passed: ids=${ids_1}; common-term hits=${common_term_hits}; unstrict total citations before=${citations_before}, after=${citations_after}, restricted before=${restricted_before_count}, restricted after=${restricted_after_count}"

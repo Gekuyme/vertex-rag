@@ -71,6 +71,17 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 		maxPerDoc = 1
 	}
 
+	candidatePerDoc := maxPerDoc * 3
+	if candidatePerDoc < 3 {
+		candidatePerDoc = 3
+	}
+	if candidatePerDoc > 10 {
+		candidatePerDoc = 10
+	}
+	if candidatePerDoc > candidateK {
+		candidatePerDoc = candidateK
+	}
+
 	queryEmbedding := formatEmbeddingVector(opts.QueryEmbedding)
 
 	rows, err := s.pool.Query(ctx, `
@@ -79,10 +90,12 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 				$1::uuid AS org_id,
 				$2::bigint AS role_id,
 				$3::text AS query_text,
+				to_tsquery('simple', $3::text || ':*') AS query_ts,
 				NULLIF($4::text, '')::vector AS query_embedding,
-				$5::int AS candidate_k
+				$5::int AS candidate_k,
+				$6::int AS candidate_per_doc
 		),
-		vector_hits AS (
+		vector_ranked AS (
 			SELECT
 				dc.id AS chunk_id,
 				dc.document_id,
@@ -91,7 +104,11 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 				dc.chunk_index,
 				dc.content,
 				dc.metadata,
-				ROW_NUMBER() OVER (ORDER BY dc.embedding <=> (SELECT query_embedding FROM params)) AS rank
+				dc.embedding <=> (SELECT query_embedding FROM params) AS distance,
+				ROW_NUMBER() OVER (
+					PARTITION BY dc.document_id
+					ORDER BY dc.embedding <=> (SELECT query_embedding FROM params) ASC, dc.chunk_index ASC, dc.id ASC
+				) AS doc_rank
 			FROM document_chunks dc
 			JOIN documents d ON d.id = dc.document_id
 			WHERE dc.org_id = (SELECT org_id FROM params)
@@ -99,10 +116,25 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 				AND dc.allowed_role_ids @> ARRAY[(SELECT role_id FROM params)]::bigint[]
 				AND dc.embedding IS NOT NULL
 				AND (SELECT query_embedding FROM params) IS NOT NULL
-			ORDER BY dc.embedding <=> (SELECT query_embedding FROM params)
+				AND vector_dims(dc.embedding) = vector_dims((SELECT query_embedding FROM params))
+		),
+		vector_hits AS (
+			SELECT
+				chunk_id,
+				document_id,
+				doc_title,
+				doc_filename,
+				chunk_index,
+				content,
+				metadata,
+				distance,
+				1.0 / (1.0 + distance) AS vector_score
+			FROM vector_ranked
+			WHERE doc_rank <= (SELECT candidate_per_doc FROM params)
+			ORDER BY distance ASC, chunk_index ASC, chunk_id ASC
 			LIMIT (SELECT candidate_k FROM params)
 		),
-		text_hits AS (
+		text_ranked AS (
 			SELECT
 				dc.id AS chunk_id,
 				dc.document_id,
@@ -111,16 +143,31 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 				dc.chunk_index,
 				dc.content,
 				dc.metadata,
+				ts_rank_cd(dc.content_tsv, (SELECT query_ts FROM params)) AS raw_text_score,
 				ROW_NUMBER() OVER (
-					ORDER BY ts_rank_cd(dc.content_tsv, plainto_tsquery('simple', (SELECT query_text FROM params))) DESC
-				) AS rank
+					PARTITION BY dc.document_id
+					ORDER BY ts_rank_cd(dc.content_tsv, (SELECT query_ts FROM params)) DESC, dc.chunk_index ASC, dc.id ASC
+				) AS doc_rank
 			FROM document_chunks dc
 			JOIN documents d ON d.id = dc.document_id
 			WHERE dc.org_id = (SELECT org_id FROM params)
 				AND d.status = 'ready'
 				AND dc.allowed_role_ids @> ARRAY[(SELECT role_id FROM params)]::bigint[]
-				AND dc.content_tsv @@ plainto_tsquery('simple', (SELECT query_text FROM params))
-			ORDER BY ts_rank_cd(dc.content_tsv, plainto_tsquery('simple', (SELECT query_text FROM params))) DESC
+				AND dc.content_tsv @@ (SELECT query_ts FROM params)
+		),
+		text_hits AS (
+			SELECT
+				chunk_id,
+				document_id,
+				doc_title,
+				doc_filename,
+				chunk_index,
+				content,
+				metadata,
+				raw_text_score AS text_score
+			FROM text_ranked
+			WHERE doc_rank <= (SELECT candidate_per_doc FROM params)
+			ORDER BY raw_text_score DESC, chunk_index ASC, chunk_id ASC
 			LIMIT (SELECT candidate_k FROM params)
 		),
 		merged AS (
@@ -132,7 +179,7 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 				chunk_index,
 				content,
 				metadata,
-				1.0 / (60 + rank) AS vector_score,
+				vector_score,
 				0.0::float8 AS text_score
 			FROM vector_hits
 			UNION ALL
@@ -145,7 +192,7 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 				content,
 				metadata,
 				0.0::float8 AS vector_score,
-				1.0 / (60 + rank) AS text_score
+				text_score
 			FROM text_hits
 		),
 			aggregated AS (
@@ -159,14 +206,17 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 					metadata,
 					MAX(vector_score) AS vector_score,
 					MAX(text_score) AS text_score,
-					SUM(vector_score + text_score) AS score
+					(0.65 * MAX(vector_score)) + (0.35 * MAX(text_score)) AS score
 				FROM merged
 				GROUP BY chunk_id, document_id, doc_title, doc_filename, chunk_index, content, metadata
 			),
 			limited AS (
 				SELECT
 					*,
-					ROW_NUMBER() OVER (PARTITION BY document_id ORDER BY score DESC, chunk_index ASC) AS doc_rank
+					ROW_NUMBER() OVER (
+						PARTITION BY document_id
+						ORDER BY score DESC, vector_score DESC, text_score DESC, chunk_index ASC, chunk_id ASC
+					) AS doc_rank
 				FROM aggregated
 			)
 			SELECT
@@ -181,10 +231,10 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 				text_score,
 				score
 			FROM limited
-			WHERE doc_rank <= $7
-			ORDER BY score DESC, vector_score DESC, text_score DESC, chunk_index ASC
-			LIMIT $6
-		`, opts.OrgID, opts.RoleID, query, queryEmbedding, candidateK, topK, maxPerDoc)
+			WHERE doc_rank <= $8
+			ORDER BY score DESC, vector_score DESC, text_score DESC, chunk_index ASC, chunk_id ASC
+			LIMIT $7
+		`, opts.OrgID, opts.RoleID, query, queryEmbedding, candidateK, candidatePerDoc, topK, maxPerDoc)
 	if err != nil {
 		return nil, fmt.Errorf("retrieve chunks: %w", err)
 	}
