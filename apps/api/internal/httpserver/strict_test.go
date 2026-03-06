@@ -110,6 +110,148 @@ func TestBuildLLMContext_IncludesChunkKindMetadata(t *testing.T) {
 	}
 }
 
+func TestFocusRetrievedChunks_DefinitionFiltersOffTopicChunks(t *testing.T) {
+	retrieved := []store.RetrievalChunk{
+		{
+			ChunkID:     "goroutines",
+			DocTitle:    "Go concurrency",
+			DocFilename: "go.txt",
+			Content:     "Горутины — это легковесные потоки управления в Go. Горутины запускаются словом go. Каналы используются между горутинами.",
+		},
+		{
+			ChunkID:     "strings",
+			DocTitle:    "Go strings",
+			DocFilename: "strings.txt",
+			Content:     "Учебник Go: строки, массивы, горутины и каналы.",
+		},
+	}
+
+	filtered := focusRetrievedChunks("что такое горутины", "definition", retrieved)
+	if len(filtered) != 1 {
+		t.Fatalf("expected one focused chunk, got %d", len(filtered))
+	}
+	if filtered[0].ChunkID != "goroutines" {
+		t.Fatalf("expected goroutines chunk to remain, got %q", filtered[0].ChunkID)
+	}
+}
+
+func TestFocusRetrievedChunks_FallsBackWhenNoTopicalMatch(t *testing.T) {
+	retrieved := []store.RetrievalChunk{
+		{
+			ChunkID:     "strings",
+			DocTitle:    "Go strings",
+			DocFilename: "strings.txt",
+			Content:     "Строка в Go — это неизменяемая последовательность байтов.",
+		},
+	}
+
+	filtered := focusRetrievedChunks("что такое горутины", "definition", retrieved)
+	if len(filtered) != len(retrieved) {
+		t.Fatalf("expected original retrieval to be preserved when filter is empty")
+	}
+}
+
+func TestChunkTopicScore_PrefersDenseTopicalChunk(t *testing.T) {
+	focusTokens := topicalQueryTokens("что такое горутины")
+	if len(focusTokens) == 0 {
+		t.Fatalf("expected focus tokens for goroutines query")
+	}
+
+	dense := store.RetrievalChunk{
+		ChunkID:  "dense",
+		Content:  "Горутины — это легковесные потоки. Каналы синхронизируют горутины. Горутины запускаются словом go.",
+		DocTitle: "Go concurrency",
+	}
+	sparse := store.RetrievalChunk{
+		ChunkID:  "sparse",
+		Content:  "Учебник Go: строки, массивы, горутины и каналы.",
+		DocTitle: "Go basics",
+	}
+
+	if chunkTopicScore(dense, focusTokens) <= chunkTopicScore(sparse, focusTokens) {
+		t.Fatalf("expected dense goroutines chunk to score higher than mixed-topic chunk")
+	}
+}
+
+func TestExpandTopicalVariants_HandlesRussianPlural(t *testing.T) {
+	variants := expandTopicalVariants("строки")
+	if !containsAll(strings.Join(variants, " "), "строки", "строк", "строка") {
+		t.Fatalf("expected plural variants for строки, got %#v", variants)
+	}
+}
+
+func TestChunkTopicScore_PrefersDefinitionPatternForStrings(t *testing.T) {
+	focusTokens := topicalQueryTokens("что такое строки")
+	good := store.RetrievalChunk{
+		ChunkID: "good",
+		Content: "В Go строка — это неизменяемая последовательность байтов (обычно UTF-8).",
+		Metadata: map[string]any{
+			"chunk_kind": "definition",
+		},
+		DocTitle: "go strings",
+	}
+	bad := store.RetrievalChunk{
+		ChunkID: "bad",
+		Content: "Неизменяемость означает, что две копии строки могут безопасно разделять одну и ту же память.",
+		Metadata: map[string]any{
+			"chunk_kind": "procedure",
+		},
+		DocTitle: "Donovan Go",
+	}
+
+	if chunkTopicScore(good, focusTokens) <= chunkTopicScore(bad, focusTokens) {
+		t.Fatalf("expected definition pattern chunk to score higher for strings query")
+	}
+}
+
+func TestDefinitionSourceScore_PrefersTxtOverNoisyPDF(t *testing.T) {
+	txt := store.RetrievalChunk{
+		DocFilename: "go.txt",
+		Content:     "Строка — это неизменяемая последовательность байтов (обычно UTF-8).",
+	}
+	pdf := store.RetrievalChunk{
+		DocFilename: "book.pdf",
+		Content:     "0 до 7), не превышающими значение \\3 7 7 . Обе они обозначают один байт с указанным значением. Неформатированный строковый литерал ( ' . . . ' ) ...",
+	}
+
+	if definitionSourceScore(txt) <= definitionSourceScore(pdf) {
+		t.Fatalf("expected txt definition source to score higher than noisy pdf")
+	}
+}
+
+func TestLooksOCRNoisy_DetectsArtifacts(t *testing.T) {
+	if !looksOCRNoisy("0 до 7), не превышающими значение \\3 7 7 . Неформатированный литерал ( ' . . . ' )") {
+		t.Fatalf("expected noisy OCR-like chunk to be detected")
+	}
+	if looksOCRNoisy("Строка — это неизменяемая последовательность байтов (обычно UTF-8).") {
+		t.Fatalf("did not expect clean definition chunk to be marked noisy")
+	}
+}
+
+func TestBuildStrictHeuristicAnswer_UsesTopChunkBullets(t *testing.T) {
+	retrieved := []store.RetrievalChunk{
+		{
+			ChunkID: "c1",
+			Content: "3. ГОРУТИНЫ\n- Это легковесные потоки управления, выполняемые планировщиком Go.\n- Запускаются ключевым словом 'go'.\n- Потребляют очень мало памяти.",
+		},
+	}
+
+	answer := buildStrictHeuristicAnswer(retrieved)
+	if answer == "" {
+		t.Fatalf("expected heuristic answer")
+	}
+	if !containsAll(answer,
+		"Краткий ответ:",
+		"Это легковесные потоки управления, выполняемые планировщиком Go. [1]",
+		"\"Запускаются ключевым словом 'go'.\" [1]",
+	) {
+		t.Fatalf("unexpected heuristic answer: %q", answer)
+	}
+	if !isStrictCompletionValid(answer, retrieved) {
+		t.Fatalf("expected heuristic answer to satisfy strict validation")
+	}
+}
+
 func containsAll(value string, parts ...string) bool {
 	for _, part := range parts {
 		if !strings.Contains(value, part) {

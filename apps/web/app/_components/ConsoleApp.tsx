@@ -101,6 +101,10 @@ type StreamDonePayload = {
   citations: Citation[];
 };
 
+type ResponseProfile = "fast" | "balanced" | "thinking";
+type StreamPhase = "retrieving" | "drafting" | "finalizing";
+type ComposerDropdown = "mode" | "profile" | null;
+
 type ConsoleAppProps = {
   initialView?: ConsoleView;
 };
@@ -114,6 +118,16 @@ const rolePermissionOptions = [
   { key: "can_use_unstrict", label: "Использование unstrict" }
 ] as const;
 const onboardingSeenStorageKey = "vertex_onboarding_seen_v1";
+const responseProfiles: Array<{
+  id: ResponseProfile;
+  label: string;
+  topK: number;
+  candidateK: number;
+}> = [
+  { id: "fast", label: "Fast", topK: 4, candidateK: 12 },
+  { id: "balanced", label: "Balanced", topK: 8, candidateK: 32 },
+  { id: "thinking", label: "Thinking", topK: 12, candidateK: 48 }
+];
 const onboardingSteps: OnboardingStep[] = [
   {
     selector: '[data-tour="chat-nav"]',
@@ -170,7 +184,13 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draftMessage, setDraftMessage] = useState("");
   const [messageMode, setMessageMode] = useState<"strict" | "unstrict">("strict");
+  const [responseProfile, setResponseProfile] = useState<ResponseProfile>("balanced");
+  const [openComposerDropdown, setOpenComposerDropdown] = useState<ComposerDropdown>(null);
   const [streamingAssistant, setStreamingAssistant] = useState("");
+  const [streamPhase, setStreamPhase] = useState<StreamPhase | null>(null);
+  const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null);
+  const [streamElapsedSeconds, setStreamElapsedSeconds] = useState(0);
+  const [assistantResponseDurations, setAssistantResponseDurations] = useState<Record<string, number>>({});
   const [isStreamingMessage, setIsStreamingMessage] = useState(false);
   const [isCitationPreviewOpen, setIsCitationPreviewOpen] = useState(false);
   const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
@@ -189,7 +209,6 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const [isBusy, setIsBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [chatError, setChatError] = useState("");
 
   const [organizationName, setOrganizationName] = useState("");
   const [email, setEmail] = useState("");
@@ -227,6 +246,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const isUploadModalPresent = useModalPresence(isUploadModalOpen, modalAnimationMs);
   const isCitationPreviewPresent = useModalPresence(isCitationPreviewOpen, modalAnimationMs);
   const currentOnboardingStep = onboardingSteps[onboardingStepIndex] || null;
+  const activeResponseProfile = responseProfiles.find((profile) => profile.id === responseProfile) || responseProfiles[1];
 
   useEffect(() => {
     const storedToken = window.localStorage.getItem(accessTokenStorageKey);
@@ -272,6 +292,46 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     }
   }, [canAccessUnstrict, messageMode]);
 
+  useEffect(() => {
+    function onPointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      if (target.closest("[data-composer-dropdown]")) {
+        return;
+      }
+      setOpenComposerDropdown(null);
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpenComposerDropdown(null);
+      }
+    }
+
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isStreamingMessage || streamStartedAt === null) {
+      return;
+    }
+
+    const updateElapsed = () => {
+      setStreamElapsedSeconds(Math.max(0, Math.floor((Date.now() - streamStartedAt) / 1000)));
+    };
+
+    updateElapsed();
+    const intervalID = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(intervalID);
+  }, [isStreamingMessage, streamStartedAt]);
+
   function flushStreamingAssistantBuffer() {
     if (streamingAssistantFlushFrameRef.current !== null) {
       window.cancelAnimationFrame(streamingAssistantFlushFrameRef.current);
@@ -310,7 +370,34 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     }
     streamingAssistantBufferRef.current = "";
     setStreamingAssistant("");
+    setStreamPhase(null);
   }
+
+  function streamPhaseLabel(phase: StreamPhase | null, profile: ResponseProfile): string {
+    switch (phase) {
+      case "retrieving":
+        return profile === "fast" ? "Быстро ищет контекст" : "Ищет релевантный контекст";
+      case "drafting":
+        return profile === "thinking" ? "Собирает и сверяет ответ" : "Готовит ответ";
+      case "finalizing":
+        return "Финализирует ответ";
+      default:
+        return profile === "thinking" ? "Думает глубже" : "Думает";
+    }
+  }
+
+  function formatElapsed(totalSeconds: number): string {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  const modeOptions: Array<{ value: "strict" | "unstrict"; label: string }> = canAccessUnstrict
+    ? [
+        { value: "strict", label: "Строгий" },
+        { value: "unstrict", label: "Нестрогий" }
+      ]
+    : [{ value: "strict", label: "Строгий" }];
 
   useEffect(() => {
     // Keep the latest message visible when chatting.
@@ -749,9 +836,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setIsBusy(true);
     setIsStreamingMessage(true);
     setMessage("");
-    setChatError("");
+    setError("");
     setDraftMessage("");
     resetStreamingAssistant();
+    setStreamPhase("retrieving");
+    setStreamStartedAt(Date.now());
+    setStreamElapsedSeconds(0);
     setMessages((current) => [...current, optimisticUserMessage]);
     let persistedUserMessageID = "";
     const localAssistantErrorID = `${optimisticMessageID}-error`;
@@ -768,9 +858,14 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       if (messageMode) {
         payload.mode = messageMode;
       }
+      payload.top_k = activeResponseProfile.topK;
+      payload.candidate_k = activeResponseProfile.candidateK;
 
       const response = await streamChatMessage(activeChatID, payload, token, {
         signal: streamController.signal,
+        onPhase(nextPhase) {
+          setStreamPhase(nextPhase);
+        },
         onUserMessage(nextMessage) {
           persistedUserMessageID = nextMessage.id;
           setMessages((current) => {
@@ -807,6 +902,13 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
         }
         return nextMessages;
       });
+      if (streamStartedAt !== null) {
+        const elapsedSeconds = Math.max(0, Math.floor((Date.now() - streamStartedAt) / 1000));
+        setAssistantResponseDurations((current) => ({
+          ...current,
+          [response.assistant_message.id]: elapsedSeconds
+        }));
+      }
       resetStreamingAssistant();
       // Refresh list so sidebar ordering stays accurate, but keep active chat and local messages.
       void refreshChats(token).catch(() => {});
@@ -819,6 +921,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
         ? persistedUserMessageID
         : optimisticMessageID;
       const reason = errorMessage(requestError);
+      const shortReason = "Не удалось получить ответ.";
       setMessages((current) => {
         const localAssistantErrorID = `${optimisticMessageID}-error`;
         const nextMessages = current.map((entry) =>
@@ -837,7 +940,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
           chat_id: activeChatID,
           role: "assistant",
           mode: messageMode,
-          content: `Ошибка запроса: ${reason}`,
+          content: shortReason,
           citations: [],
           created_at: new Date().toISOString(),
           client_status: "failed"
@@ -847,13 +950,14 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
           localAssistantErrorMessage
         ];
       });
-      setChatError(reason);
+      setError(shortReason);
     } finally {
       if (chatStreamAbortRef.current === streamController) {
         chatStreamAbortRef.current = null;
       }
       setIsBusy(false);
       setIsStreamingMessage(false);
+      setStreamStartedAt(null);
       queueMicrotask(() => composerRef.current?.focus());
     }
   }
@@ -1099,9 +1203,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setChats([]);
     setActiveChatID("");
     setMessages([]);
+    setAssistantResponseDurations({});
     setDraftMessage("");
     resetStreamingAssistant();
     setIsStreamingMessage(false);
+    setStreamStartedAt(null);
+    setStreamElapsedSeconds(0);
   }
 
   const activeChat = useMemo(
@@ -1122,6 +1229,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   return (
     <main className={shellClassName}>
       <section className={cardClassName}>
+        {message && <div className="message success">{message}</div>}
+        {error && <div className="message error">{error}</div>}
+
         {!user && (
           <div className="headerRow">
             <div>
@@ -1294,7 +1404,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                         <div className="chatBubble">
                           <div className="chatBubbleMeta">
                             <span className="chatRole">{entry.role === "user" ? "Вы" : "Ассистент"}</span>
-                            <span className="chatMode">{entry.mode}</span>
+                            {entry.role === "assistant" && assistantResponseDurations[entry.id] !== undefined && (
+                              <span className="chatMetaTime">{formatElapsed(assistantResponseDurations[entry.id])}</span>
+                            )}
                           </div>
                           <div className="chatBubbleContent">{entry.content}</div>
                           {entry.role === "user" && entry.client_status === "failed" && (
@@ -1341,12 +1453,13 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                         <div className="chatBubble">
                           <div className="chatBubbleMeta">
                             <span className="chatRole">Ассистент</span>
-                            <span className="chatMode">{messageMode}</span>
+                            <span className="chatMetaTime">{formatElapsed(streamElapsedSeconds)}</span>
                           </div>
                           <div className="chatBubbleContent">
                             {streamingAssistant || (
                               <span className="thinkingText">
-                                Думает<span className="thinkingDots" aria-hidden="true"></span>
+                                {streamPhaseLabel(streamPhase, responseProfile)}
+                                <span className="thinkingDots" aria-hidden="true"></span>
                               </span>
                             )}
                           </div>
@@ -1358,11 +1471,6 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                   <div className="composerCloud" aria-hidden="true" />
                   <form className="composer" onSubmit={(event) => void onSendMessage(event)}>
                     <div className="composerCard">
-                      {chatError && (
-                        <div className="composerInlineError" role="alert">
-                          {chatError}
-                        </div>
-                      )}
                       <textarea
                         ref={composerRef}
                         value={draftMessage}
@@ -1392,25 +1500,36 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                           >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                           </button>
-                          <div className="modeToggle modeToggleCompact" role="tablist" aria-label="Режим ответа" data-tour="mode-toggle">
-                            <button
-                              type="button"
-                              className={`modeToggleItem ${messageMode === "strict" ? "active" : ""}`}
-                              onClick={() => setMessageMode("strict")}
-                            >
-                              Строгий
-                            </button>
-                            {canAccessUnstrict ? (
-                              <button
-                                type="button"
-                                className={`modeToggleItem ${messageMode === "unstrict" ? "active" : ""}`}
-                                onClick={() => setMessageMode("unstrict")}
-                              >
-                                Нестрогий
-                              </button>
-                            ) : (
-                              <span className="modeToggleHint">Роль не разрешает unstrict</span>
-                            )}
+                          <div className="composerSelectGroup" aria-label="Режим ответа" data-tour="mode-toggle">
+                            <ComposerDropdownMenu
+                              isOpen={openComposerDropdown === "mode"}
+                              label={modeOptions.find((option) => option.value === messageMode)?.label || "Строгий"}
+                              onToggle={() => setOpenComposerDropdown((current) => current === "mode" ? null : "mode")}
+                              options={modeOptions.map((option) => ({
+                                value: option.value,
+                                label: option.label
+                              }))}
+                              onSelect={(value) => {
+                                setMessageMode(value as "strict" | "unstrict");
+                                setOpenComposerDropdown(null);
+                              }}
+                            />
+                            {!canAccessUnstrict && <span className="modeToggleHint">Роль не разрешает unstrict</span>}
+                          </div>
+                          <div className="composerSelectGroup" aria-label="Профиль ответа">
+                            <ComposerDropdownMenu
+                              isOpen={openComposerDropdown === "profile"}
+                              label={activeResponseProfile.label}
+                              onToggle={() => setOpenComposerDropdown((current) => current === "profile" ? null : "profile")}
+                              options={responseProfiles.map((profile) => ({
+                                value: profile.id,
+                                label: profile.label
+                              }))}
+                              onSelect={(value) => {
+                                setResponseProfile(value as ResponseProfile);
+                                setOpenComposerDropdown(null);
+                              }}
+                            />
                           </div>
                         </div>
 
@@ -2268,6 +2387,51 @@ function useModalPresence(isOpen: boolean, animationMs: number) {
   return isPresent;
 }
 
+function ComposerDropdownMenu({
+  isOpen,
+  label,
+  options,
+  onToggle,
+  onSelect
+}: {
+  isOpen: boolean;
+  label: string;
+  options: Array<{ value: string; label: string }>;
+  onToggle: () => void;
+  onSelect: (value: string) => void;
+}) {
+  return (
+    <div className="composerDropdown" data-composer-dropdown>
+      <button
+        type="button"
+        className={`composerDropdownTrigger ${isOpen ? "open" : ""}`}
+        onClick={onToggle}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+      >
+        <span>{label}</span>
+        <svg className="composerDropdownIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M6 9L12 15L18 9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {isOpen && (
+        <div className="composerDropdownMenu" role="listbox">
+          {options.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className="composerDropdownOption"
+              onClick={() => onSelect(option.value)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 async function apiRequest<T = unknown>(path: string, options: RequestOptions = {}): Promise<T> {
   const response = await fetch(`${APIBaseURL}${path}`, {
     method: options.method || "GET",
@@ -2314,6 +2478,7 @@ async function streamChatMessage(
   token: string,
   handlers: {
     signal?: AbortSignal;
+    onPhase: (phase: StreamPhase) => void;
     onUserMessage: (message: ChatMessage) => void;
     onAssistantDelta: (delta: string) => void;
   }
@@ -2371,6 +2536,12 @@ async function streamChatMessage(
         const payload = JSON.parse(parsed.data) as { delta?: string };
         if (payload.delta) {
           handlers.onAssistantDelta(payload.delta);
+        }
+      }
+      if (parsed.event === "phase") {
+        const payload = JSON.parse(parsed.data) as { phase?: StreamPhase };
+        if (payload.phase) {
+          handlers.onPhase(payload.phase);
         }
       }
       if (parsed.event === "done") {

@@ -678,6 +678,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   font-size: 0.95rem;
   color: var(--text);
 }
+
+.chatMetaTime {
+  font-size: 0.78rem;
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+
 .chatMode {
   font-size: 0.75rem;
   color: var(--muted-2);
@@ -935,13 +942,85 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   height: 30px;
 }
 
-.modeToggleCompact {
-  padding: 3px;
+.composerSelectGroup {
+  display: inline-flex;
+  align-items: center;
 }
 
-.modeToggleCompact .modeToggleItem {
-  padding: 5px 10px;
-  font-size: 0.78rem;
+.composerDropdown {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.composerDropdownTrigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  margin: 0;
+  transition: color 0.2s ease, opacity 0.2s ease;
+}
+
+.composerDropdownTrigger:hover,
+.composerDropdownTrigger.open {
+  color: var(--primary);
+}
+
+.composerDropdownTrigger:focus-visible {
+  outline: none;
+  color: var(--primary);
+}
+
+.composerDropdownIcon {
+  color: var(--muted-2);
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
+.composerDropdownTrigger.open .composerDropdownIcon {
+  transform: translateY(1px);
+  color: var(--primary);
+}
+
+.composerDropdownMenu {
+  position: absolute;
+  inset: auto auto calc(100% + 12px) 0;
+  top: auto !important;
+  z-index: 30;
+  min-width: 168px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 94%, white 6%);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(18px);
+  transform-origin: bottom left;
+}
+
+.composerDropdownOption {
+  width: 100%;
+  display: block;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.84rem;
+  font-weight: 600;
+  padding: 10px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.composerDropdownOption:hover {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
 }
 
 .modeToggleHint {
@@ -1053,7 +1132,7 @@ tbody tr:hover { background: var(--surface-hover); }
   position: absolute;
   right: 16px;
   left: auto;
-  bottom: 16px;
+  top: 16px;
   margin: 0;
   max-width: min(520px, calc(100% - 32px));
   z-index: 80;
@@ -1061,7 +1140,7 @@ tbody tr:hover { background: var(--surface-hover); }
 }
 
 .cardApp > .message.success + .message.error {
-  bottom: 74px;
+  top: 74px;
 }
 
 .settingsModalOverlay {

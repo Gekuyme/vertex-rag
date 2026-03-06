@@ -9,7 +9,7 @@ COMPOSE_SELFHOST := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE)
 	migrate migrate-extensions migrate-auth migrate-docs migrate-kb-version migrate-embedding-vector migrate-chat-settings migrate-unstrict-backfill reingest-all \
 	test test-api test-worker test-integration test-integration-acl test-integration-mode test-integration-pdf test-integration-retrieval test-integration-cache \
 	test-e2e \
-	build-web dev-web health smoke-role-acl smoke-mode-toggle smoke-pdf-ingest smoke-retrieval-stability smoke-cache-speed up-selfhost pull-selfhost
+	build-web dev-web health smoke-user smoke-role-acl smoke-mode-toggle smoke-pdf-ingest smoke-retrieval-stability smoke-cache-speed smoke-query-matrix smoke-query-matrix-lite up-selfhost pull-selfhost
 
 help:
 	@echo "Available targets:"
@@ -44,9 +44,12 @@ help:
 	@echo "  make smoke-pdf-ingest    - Run PDF ingest readiness smoke scenario"
 	@echo "  make smoke-retrieval-stability - Run retrieval stability smoke scenario"
 	@echo "  make smoke-cache-speed   - Run strict cache speed smoke scenario"
+	@echo "  make smoke-query-matrix  - Run query matrix across modes and speed profiles"
+	@echo "  make smoke-query-matrix-lite - Run reduced query matrix for quota-limited providers"
 	@echo "  make build-web           - Build Next.js app"
 	@echo "  make dev-web             - Run Next.js dev server locally (HMR)"
 	@echo "  make health              - Check API and Worker health"
+	@echo "  make smoke-user          - Ensure persistent smoke user in Vertex Demo"
 
 up:
 	$(COMPOSE) up -d
@@ -174,3 +177,12 @@ smoke-retrieval-stability:
 
 smoke-cache-speed:
 	./scripts/smoke_cache_speed.sh
+
+smoke-user:
+	./scripts/ensure_smoke_user.sh
+
+smoke-query-matrix:
+	./scripts/smoke_query_matrix.sh
+
+smoke-query-matrix-lite:
+	QUERY_SET=lite CASE_SET=lite ./scripts/smoke_query_matrix.sh
