@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_document_chunks_embedding_hnsw_768;
+DROP INDEX IF EXISTS idx_document_chunks_embedding_hnsw_256;

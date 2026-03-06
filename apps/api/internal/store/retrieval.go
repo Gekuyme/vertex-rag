@@ -84,15 +84,68 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 	}
 
 	queryEmbedding := formatEmbeddingVector(opts.QueryEmbedding)
+	queryEmbeddingDims := len(opts.QueryEmbedding)
 
-	rows, err := s.pool.Query(ctx, `
+	rows, err := s.pool.Query(ctx, retrievalQuerySQL(queryEmbeddingDims), opts.OrgID, opts.RoleID, query, queryEmbedding, candidateK, candidatePerDoc, topK, maxPerDoc, strings.TrimSpace(opts.QueryIntent))
+	if err != nil {
+		return nil, fmt.Errorf("retrieve chunks: %w", err)
+	}
+	defer rows.Close()
+
+	chunks := make([]RetrievalChunk, 0)
+	for rows.Next() {
+		var chunk RetrievalChunk
+		var metadataJSON []byte
+		if err := rows.Scan(
+			&chunk.ChunkID,
+			&chunk.DocumentID,
+			&chunk.DocTitle,
+			&chunk.DocFilename,
+			&chunk.ChunkIndex,
+			&chunk.Content,
+			&metadataJSON,
+			&chunk.VectorScore,
+			&chunk.TextScore,
+			&chunk.Score,
+		); err != nil {
+			return nil, fmt.Errorf("scan retrieval chunk: %w", err)
+		}
+
+		chunk.Metadata = map[string]any{}
+		if len(metadataJSON) > 0 {
+			if err := json.Unmarshal(metadataJSON, &chunk.Metadata); err != nil {
+				return nil, fmt.Errorf("decode retrieval metadata: %w", err)
+			}
+		}
+
+		chunks = append(chunks, chunk)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate retrieval chunks: %w", err)
+	}
+
+	return chunks, nil
+}
+
+func retrievalQuerySQL(queryEmbeddingDims int) string {
+	queryEmbeddingExpr := "NULLIF($4::text, '')::vector"
+	vectorDistanceExpr := "dc.embedding <=> (SELECT query_embedding FROM params)"
+	vectorDimsPredicate := "vector_dims(dc.embedding) = vector_dims((SELECT query_embedding FROM params))"
+
+	if queryEmbeddingDims > 0 {
+		queryEmbeddingExpr = fmt.Sprintf("NULLIF($4::text, '')::vector(%d)", queryEmbeddingDims)
+		vectorDistanceExpr = fmt.Sprintf("dc.embedding::vector(%d) <=> (SELECT query_embedding FROM params)", queryEmbeddingDims)
+		vectorDimsPredicate = fmt.Sprintf("vector_dims(dc.embedding) = %d", queryEmbeddingDims)
+	}
+
+	return fmt.Sprintf(`
 		WITH params AS (
 			SELECT
 				$1::uuid AS org_id,
 				$2::bigint AS role_id,
 				$3::text AS query_text,
 				to_tsquery('simple', $3::text || ':*') AS query_ts,
-				NULLIF($4::text, '')::vector AS query_embedding,
+				%s AS query_embedding,
 				$5::int AS candidate_k,
 				$6::int AS candidate_per_doc,
 				$9::text AS query_intent
@@ -106,10 +159,10 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 				dc.chunk_index,
 				dc.content,
 				dc.metadata,
-				dc.embedding <=> (SELECT query_embedding FROM params) AS distance,
+				%s AS distance,
 				ROW_NUMBER() OVER (
 					PARTITION BY dc.document_id
-					ORDER BY dc.embedding <=> (SELECT query_embedding FROM params) ASC, dc.chunk_index ASC, dc.id ASC
+					ORDER BY %s ASC, dc.chunk_index ASC, dc.id ASC
 				) AS doc_rank
 			FROM document_chunks dc
 			JOIN documents d ON d.id = dc.document_id
@@ -118,7 +171,7 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 				AND dc.allowed_role_ids @> ARRAY[(SELECT role_id FROM params)]::bigint[]
 				AND dc.embedding IS NOT NULL
 				AND (SELECT query_embedding FROM params) IS NOT NULL
-				AND vector_dims(dc.embedding) = vector_dims((SELECT query_embedding FROM params))
+				AND %s
 		),
 		vector_hits AS (
 			SELECT
@@ -249,45 +302,7 @@ func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]Re
 			WHERE doc_rank <= $8
 			ORDER BY score DESC, vector_score DESC, text_score DESC, chunk_index ASC, chunk_id ASC
 			LIMIT $7
-		`, opts.OrgID, opts.RoleID, query, queryEmbedding, candidateK, candidatePerDoc, topK, maxPerDoc, strings.TrimSpace(opts.QueryIntent))
-	if err != nil {
-		return nil, fmt.Errorf("retrieve chunks: %w", err)
-	}
-	defer rows.Close()
-
-	chunks := make([]RetrievalChunk, 0)
-	for rows.Next() {
-		var chunk RetrievalChunk
-		var metadataJSON []byte
-		if err := rows.Scan(
-			&chunk.ChunkID,
-			&chunk.DocumentID,
-			&chunk.DocTitle,
-			&chunk.DocFilename,
-			&chunk.ChunkIndex,
-			&chunk.Content,
-			&metadataJSON,
-			&chunk.VectorScore,
-			&chunk.TextScore,
-			&chunk.Score,
-		); err != nil {
-			return nil, fmt.Errorf("scan retrieval chunk: %w", err)
-		}
-
-		chunk.Metadata = map[string]any{}
-		if len(metadataJSON) > 0 {
-			if err := json.Unmarshal(metadataJSON, &chunk.Metadata); err != nil {
-				return nil, fmt.Errorf("decode retrieval metadata: %w", err)
-			}
-		}
-
-		chunks = append(chunks, chunk)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate retrieval chunks: %w", err)
-	}
-
-	return chunks, nil
+		`, queryEmbeddingExpr, vectorDistanceExpr, vectorDistanceExpr, vectorDimsPredicate)
 }
 
 func formatEmbeddingVector(values []float32) string {

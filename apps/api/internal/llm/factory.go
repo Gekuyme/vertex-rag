@@ -26,6 +26,20 @@ func NewProvider(cfg config.LLMConfig) (Provider, error) {
 			cfg.MaxRetries,
 			cfg.RetryBackoff,
 		), nil
+	case "gemini":
+		if strings.TrimSpace(cfg.GeminiKey) == "" {
+			return nil, errors.New("GEMINI_API_KEY is required for gemini llm provider")
+		}
+		return newGeminiProvider(
+			cfg.GeminiBaseURL,
+			cfg.GeminiKey,
+			cfg.GeminiModel,
+			cfg.GeminiModelStrict,
+			cfg.GeminiModelUnstrict,
+			cfg.HTTPTimeout,
+			cfg.MaxRetries,
+			cfg.RetryBackoff,
+		), nil
 	case "ollama":
 		return newOllamaProvider(
 			cfg.OllamaBaseURL,

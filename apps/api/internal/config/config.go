@@ -80,6 +80,11 @@ type LLMConfig struct {
 	OpenAIModel           string
 	OpenAIModelStrict     string
 	OpenAIModelUnstrict   string
+	GeminiKey             string
+	GeminiBaseURL         string
+	GeminiModel           string
+	GeminiModelStrict     string
+	GeminiModelUnstrict   string
 	OllamaBaseURL         string
 	OllamaBaseURLStrict   string
 	OllamaBaseURLUnstrict string
@@ -178,6 +183,11 @@ func Load() (Config, error) {
 			OpenAIModel:         envOrDefault("LLM_MODEL_OPENAI", "gpt-4o-mini"),
 			OpenAIModelStrict:   envOrDefault("LLM_MODEL_OPENAI_STRICT", ""),
 			OpenAIModelUnstrict: envOrDefault("LLM_MODEL_OPENAI_UNSTRICT", ""),
+			GeminiKey:           envOrDefault("GEMINI_API_KEY", ""),
+			GeminiBaseURL:       envOrDefault("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
+			GeminiModel:         envOrDefault("LLM_MODEL_GEMINI", "gemini-2.5-flash-lite"),
+			GeminiModelStrict:   envOrDefault("LLM_MODEL_GEMINI_STRICT", ""),
+			GeminiModelUnstrict: envOrDefault("LLM_MODEL_GEMINI_UNSTRICT", ""),
 			// Keep backwards compatibility: OLLAMA_BASE_URL still works for both embeddings and LLM.
 			// LLM-specific overrides allow pointing strict/unstrict to different Ollama hosts.
 			OllamaBaseURL:         envOrDefault("LLM_OLLAMA_BASE_URL", envOrDefault("OLLAMA_BASE_URL", "http://ollama:11434")),

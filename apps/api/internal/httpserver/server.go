@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +48,18 @@ type Server struct {
 	cookieSameSite      http.SameSite
 	llmMaxContextChars  int
 	allowLegacyUnstrict bool
+}
+
+type chatFlowMetrics struct {
+	start            time.Time
+	loadChat         time.Duration
+	persistUser      time.Duration
+	retrieve         time.Duration
+	awaitHistory     time.Duration
+	awaitWebContext  time.Duration
+	llm              time.Duration
+	persistAssistant time.Duration
+	total            time.Duration
 }
 
 func New(
@@ -776,9 +790,8 @@ func (s *Server) debugRetrieval(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "query is required")
 		return
 	}
-	topK, candidateK := normalizeRetrievalLimits(payload.TopK, payload.CandidateK)
+	topK, candidateK, queryIntent := adjustRetrievalLimitsForQuery(query, payload.TopK, payload.CandidateK)
 	embedQuery, textQuery := buildRetrievalQueries(query)
-	queryIntent := detectQueryIntent(query)
 
 	vectors, err := s.embeddings.Embed(r.Context(), []string{embedQuery})
 	if err != nil {
@@ -992,6 +1005,7 @@ func (s *Server) listChatMessages(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createChatMessage(w http.ResponseWriter, r *http.Request) {
 	user, _ := currentUser(r.Context())
+	metrics := chatFlowMetrics{start: time.Now()}
 	chatID := strings.TrimSpace(r.PathValue("id"))
 	if chatID == "" {
 		writeError(w, http.StatusBadRequest, "chat id is required")
@@ -1011,6 +1025,7 @@ func (s *Server) createChatMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "chat does not belong to current user")
 		return
 	}
+	metrics.loadChat = time.Since(metrics.start)
 
 	var payload createChatMessageRequest
 	if err := decodeJSONBody(r, &payload); err != nil {
@@ -1048,21 +1063,51 @@ func (s *Server) createChatMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to persist user message")
 		return
 	}
+	metrics.persistUser = time.Since(metrics.start) - metrics.loadChat
 
-	topK, candidateK := normalizeRetrievalLimits(payload.TopK, payload.CandidateK)
+	historyCh := s.preloadChatHistory(r.Context(), user.OrgID, chatID, mode, query)
+	webContextCh := s.preloadWebSearchContext(r.Context(), user, mode, query)
+
+	retrieveStartedAt := time.Now()
+	topK, candidateK, _ := adjustRetrievalLimitsForQuery(query, payload.TopK, payload.CandidateK)
 	retrieved, citations, kbVersion, err := s.retrieveForChat(r.Context(), user, mode, query, topK, candidateK)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to retrieve context")
 		return
 	}
+	metrics.retrieve = time.Since(retrieveStartedAt)
 	s.trackTopDocumentHits(r.Context(), user.OrgID, citations)
 
-	answer, err := s.generateAssistantAnswer(r.Context(), user, chatID, mode, query, topK, candidateK, kbVersion, retrieved, citations)
+	historyStartedAt := time.Now()
+	history := s.awaitChatHistory(historyCh)
+	metrics.awaitHistory = time.Since(historyStartedAt)
+	webContextStartedAt := time.Now()
+	webContext := s.awaitWebSearchContext(webContextCh)
+	metrics.awaitWebContext = time.Since(webContextStartedAt)
+
+	llmStartedAt := time.Now()
+	answer, err := s.generateAssistantAnswerWithHistory(
+		r.Context(),
+		user,
+		mode,
+		query,
+		topK,
+		candidateK,
+		kbVersion,
+		retrieved,
+		citations,
+		history,
+		webContext,
+	)
+	metrics.llm = time.Since(llmStartedAt)
 	if err != nil {
+		metrics.total = time.Since(metrics.start)
+		logChatFlowMetrics("chat", user.OrgID, user.ID, chatID, mode, query, topK, candidateK, len(retrieved), len(citations), metrics, err)
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 
+	persistAssistantStartedAt := time.Now()
 	assistantMessage, err := s.store.CreateMessage(r.Context(), store.CreateMessageParams{
 		ChatID:    chatID,
 		OrgID:     user.OrgID,
@@ -1073,9 +1118,15 @@ func (s *Server) createChatMessage(w http.ResponseWriter, r *http.Request) {
 		Citations: citations,
 	})
 	if err != nil {
+		metrics.persistAssistant = time.Since(persistAssistantStartedAt)
+		metrics.total = time.Since(metrics.start)
+		logChatFlowMetrics("chat", user.OrgID, user.ID, chatID, mode, query, topK, candidateK, len(retrieved), len(citations), metrics, err)
 		writeError(w, http.StatusInternalServerError, "failed to persist assistant message")
 		return
 	}
+	metrics.persistAssistant = time.Since(persistAssistantStartedAt)
+	metrics.total = time.Since(metrics.start)
+	logChatFlowMetrics("chat", user.OrgID, user.ID, chatID, mode, query, topK, candidateK, len(retrieved), len(citations), metrics, nil)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mode":              mode,
@@ -1087,6 +1138,7 @@ func (s *Server) createChatMessage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createChatMessageStream(w http.ResponseWriter, r *http.Request) {
 	user, _ := currentUser(r.Context())
+	metrics := chatFlowMetrics{start: time.Now()}
 	chatID := strings.TrimSpace(r.PathValue("id"))
 	if chatID == "" {
 		writeError(w, http.StatusBadRequest, "chat id is required")
@@ -1106,6 +1158,7 @@ func (s *Server) createChatMessageStream(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusForbidden, "chat does not belong to current user")
 		return
 	}
+	metrics.loadChat = time.Since(metrics.start)
 
 	var payload createChatMessageRequest
 	if err := decodeJSONBody(r, &payload); err != nil {
@@ -1143,14 +1196,7 @@ func (s *Server) createChatMessageStream(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "failed to persist user message")
 		return
 	}
-
-	topK, candidateK := normalizeRetrievalLimits(payload.TopK, payload.CandidateK)
-	retrieved, citations, kbVersion, err := s.retrieveForChat(r.Context(), user, mode, query, topK, candidateK)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to retrieve context")
-		return
-	}
-	s.trackTopDocumentHits(r.Context(), user.OrgID, citations)
+	metrics.persistUser = time.Since(metrics.start) - metrics.loadChat
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -1167,12 +1213,42 @@ func (s *Server) createChatMessageStream(w http.ResponseWriter, r *http.Request)
 	if err := writeSSE(w, "user_message", userMessage); err != nil {
 		return
 	}
+	if err := writeSSE(w, "phase", map[string]string{"phase": "retrieving"}); err != nil {
+		return
+	}
 	flusher.Flush()
+
+	historyCh := s.preloadChatHistory(r.Context(), user.OrgID, chatID, mode, query)
+	webContextCh := s.preloadWebSearchContext(r.Context(), user, mode, query)
+
+	retrieveStartedAt := time.Now()
+	topK, candidateK, _ := adjustRetrievalLimitsForQuery(query, payload.TopK, payload.CandidateK)
+	retrieved, citations, kbVersion, err := s.retrieveForChat(r.Context(), user, mode, query, topK, candidateK)
+	if err != nil {
+		metrics.retrieve = time.Since(retrieveStartedAt)
+		metrics.total = time.Since(metrics.start)
+		logChatFlowMetrics("stream", user.OrgID, user.ID, chatID, mode, query, topK, candidateK, 0, 0, metrics, err)
+		_ = writeSSE(w, "error", map[string]string{"error": "failed to retrieve context"})
+		flusher.Flush()
+		return
+	}
+	metrics.retrieve = time.Since(retrieveStartedAt)
+	s.trackTopDocumentHits(r.Context(), user.OrgID, citations)
 
 	var answer string
 	if mode == store.ModeUnstrict {
-		contextText := s.buildAssistantContext(r.Context(), user, mode, query, retrieved)
-		history := s.buildChatHistoryForLLM(r.Context(), user.OrgID, chatID, mode, query)
+		if err := writeSSE(w, "phase", map[string]string{"phase": "drafting"}); err != nil {
+			return
+		}
+		flusher.Flush()
+
+		historyStartedAt := time.Now()
+		history := s.awaitChatHistory(historyCh)
+		metrics.awaitHistory = time.Since(historyStartedAt)
+		webContextStartedAt := time.Now()
+		webContext := s.awaitWebSearchContext(webContextCh)
+		metrics.awaitWebContext = time.Since(webContextStartedAt)
+		contextText := s.composeAssistantContext(mode, retrieved, webContext)
 		llmRequest := llm.CompletionRequest{
 			Mode:        mode,
 			Messages:    s.messagesForContext(mode, query, contextText, history),
@@ -1184,6 +1260,7 @@ func (s *Server) createChatMessageStream(w http.ResponseWriter, r *http.Request)
 		defer cancel()
 
 		var writeErr error
+		llmStartedAt := time.Now()
 		answer, err = s.llm.StreamComplete(streamCtx, llmRequest, func(delta string) {
 			if writeErr != nil || delta == "" {
 				return
@@ -1195,21 +1272,57 @@ func (s *Server) createChatMessageStream(w http.ResponseWriter, r *http.Request)
 			}
 			flusher.Flush()
 		})
+		metrics.llm = time.Since(llmStartedAt)
 		if writeErr != nil {
+			metrics.total = time.Since(metrics.start)
+			logChatFlowMetrics("stream", user.OrgID, user.ID, chatID, mode, query, topK, candidateK, len(retrieved), len(citations), metrics, writeErr)
 			return
 		}
 		if err != nil {
+			metrics.total = time.Since(metrics.start)
+			logChatFlowMetrics("stream", user.OrgID, user.ID, chatID, mode, query, topK, candidateK, len(retrieved), len(citations), metrics, err)
 			_ = writeSSE(w, "error", map[string]string{"error": err.Error()})
 			flusher.Flush()
 			return
 		}
 	} else {
-		answer, err = s.generateAssistantAnswer(r.Context(), user, chatID, mode, query, topK, candidateK, kbVersion, retrieved, citations)
+		if err := writeSSE(w, "phase", map[string]string{"phase": "drafting"}); err != nil {
+			return
+		}
+		flusher.Flush()
+
+		historyStartedAt := time.Now()
+		history := s.awaitChatHistory(historyCh)
+		metrics.awaitHistory = time.Since(historyStartedAt)
+		webContextStartedAt := time.Now()
+		webContext := s.awaitWebSearchContext(webContextCh)
+		metrics.awaitWebContext = time.Since(webContextStartedAt)
+		llmStartedAt := time.Now()
+		answer, err = s.generateAssistantAnswerWithHistory(
+			r.Context(),
+			user,
+			mode,
+			query,
+			topK,
+			candidateK,
+			kbVersion,
+			retrieved,
+			citations,
+			history,
+			webContext,
+		)
+		metrics.llm = time.Since(llmStartedAt)
 		if err != nil {
+			metrics.total = time.Since(metrics.start)
+			logChatFlowMetrics("stream", user.OrgID, user.ID, chatID, mode, query, topK, candidateK, len(retrieved), len(citations), metrics, err)
 			_ = writeSSE(w, "error", map[string]string{"error": err.Error()})
 			flusher.Flush()
 			return
 		}
+		if err := writeSSE(w, "phase", map[string]string{"phase": "finalizing"}); err != nil {
+			return
+		}
+		flusher.Flush()
 		for _, chunk := range splitAnswerToChunks(answer, 60) {
 			if err := writeSSE(w, "assistant_delta", map[string]string{"delta": chunk}); err != nil {
 				return
@@ -1218,6 +1331,7 @@ func (s *Server) createChatMessageStream(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	persistAssistantStartedAt := time.Now()
 	assistantMessage, err := s.store.CreateMessage(r.Context(), store.CreateMessageParams{
 		ChatID:    chatID,
 		OrgID:     user.OrgID,
@@ -1228,10 +1342,16 @@ func (s *Server) createChatMessageStream(w http.ResponseWriter, r *http.Request)
 		Citations: citations,
 	})
 	if err != nil {
+		metrics.persistAssistant = time.Since(persistAssistantStartedAt)
+		metrics.total = time.Since(metrics.start)
+		logChatFlowMetrics("stream", user.OrgID, user.ID, chatID, mode, query, topK, candidateK, len(retrieved), len(citations), metrics, err)
 		_ = writeSSE(w, "error", map[string]string{"error": "failed to persist assistant message"})
 		flusher.Flush()
 		return
 	}
+	metrics.persistAssistant = time.Since(persistAssistantStartedAt)
+	metrics.total = time.Since(metrics.start)
+	logChatFlowMetrics("stream", user.OrgID, user.ID, chatID, mode, query, topK, candidateK, len(retrieved), len(citations), metrics, nil)
 
 	_ = writeSSE(w, "done", map[string]any{
 		"mode":              mode,
@@ -1367,6 +1487,60 @@ func writeSSE(w io.Writer, event string, payload any) error {
 	return err
 }
 
+func logChatFlowMetrics(
+	endpoint string,
+	orgID string,
+	userID string,
+	chatID string,
+	mode string,
+	query string,
+	topK int,
+	candidateK int,
+	retrievedCount int,
+	citationCount int,
+	metrics chatFlowMetrics,
+	flowErr error,
+) {
+	query = strings.Join(strings.Fields(strings.TrimSpace(query)), " ")
+	if len([]rune(query)) > 80 {
+		query = string([]rune(query)[:80]) + "…"
+	}
+
+	status := "ok"
+	if flowErr != nil {
+		status = "error"
+	}
+
+	log.Printf(
+		"chat_flow endpoint=%s status=%s org_id=%s user_id=%s chat_id=%s mode=%s top_k=%d candidate_k=%d retrieved=%d citations=%d load_chat_ms=%d persist_user_ms=%d retrieve_ms=%d await_history_ms=%d await_web_ms=%d llm_ms=%d persist_assistant_ms=%d total_ms=%d query=%q err=%q",
+		endpoint,
+		status,
+		orgID,
+		userID,
+		chatID,
+		mode,
+		topK,
+		candidateK,
+		retrievedCount,
+		citationCount,
+		metrics.loadChat.Milliseconds(),
+		metrics.persistUser.Milliseconds(),
+		metrics.retrieve.Milliseconds(),
+		metrics.awaitHistory.Milliseconds(),
+		metrics.awaitWebContext.Milliseconds(),
+		metrics.llm.Milliseconds(),
+		metrics.persistAssistant.Milliseconds(),
+		metrics.total.Milliseconds(),
+		query,
+		func() string {
+			if flowErr == nil {
+				return ""
+			}
+			return flowErr.Error()
+		}(),
+	)
+}
+
 func buildLLMContext(chunks []store.RetrievalChunk, maxChars int) string {
 	if len(chunks) == 0 || maxChars <= 0 {
 		return ""
@@ -1435,7 +1609,7 @@ func (s *Server) buildRetrievalCacheKey(
 	hash := sha256.Sum256([]byte(normalized))
 
 	return fmt.Sprintf(
-		"rag:v4:retrieval:%s:%d:%s:%d:%d:%d:%x",
+		"rag:v5:retrieval:%s:%d:%s:%d:%d:%d:%x",
 		orgID,
 		roleID,
 		mode,
@@ -1459,7 +1633,7 @@ func (s *Server) buildAnswerCacheKey(
 	hash := sha256.Sum256([]byte(normalized))
 
 	return fmt.Sprintf(
-		"rag:v4:answer:%s:%d:%s:%d:%d:%d:%x",
+		"rag:v5:answer:%s:%d:%s:%d:%d:%d:%x",
 		orgID,
 		roleID,
 		mode,
@@ -1666,6 +1840,7 @@ func (s *Server) retrieveForChat(
 	if err != nil {
 		return nil, nil, 0, err
 	}
+	retrieved = focusRetrievedChunks(query, queryIntent, retrieved)
 
 	if s.cache != nil {
 		_ = s.cache.SetJSON(ctx, retrievalKey, retrievalCachePayload{Chunks: retrieved}, s.cache.RetrievalTTL())
@@ -1693,6 +1868,318 @@ func buildRetrievalCitations(retrieved []store.RetrievalChunk) []retrievalCitati
 	}
 
 	return citations
+}
+
+func focusRetrievedChunks(query, queryIntent string, retrieved []store.RetrievalChunk) []store.RetrievalChunk {
+	if queryIntent != "definition" || len(retrieved) == 0 {
+		return retrieved
+	}
+
+	focusTokens := topicalQueryTokens(query)
+	if len(focusTokens) == 0 {
+		return retrieved
+	}
+
+	type scoredChunk struct {
+		chunk store.RetrievalChunk
+		score int
+	}
+	scored := make([]scoredChunk, 0, len(retrieved))
+	bestScore := 0
+	hasDefinitionMatch := false
+	for _, chunk := range retrieved {
+		score := chunkTopicScore(chunk, focusTokens)
+		if score <= 0 {
+			continue
+		}
+		if metadataString(chunk.Metadata, "chunk_kind") == "definition" {
+			hasDefinitionMatch = true
+		}
+		if score > bestScore {
+			bestScore = score
+		}
+		scored = append(scored, scoredChunk{chunk: chunk, score: score})
+	}
+	if len(scored) == 0 {
+		return retrieved
+	}
+
+	if hasDefinitionMatch {
+		definitionOnly := scored[:0]
+		for _, item := range scored {
+			if metadataString(item.chunk.Metadata, "chunk_kind") != "definition" {
+				continue
+			}
+			definitionOnly = append(definitionOnly, item)
+		}
+		scored = definitionOnly
+		if len(scored) == 0 {
+			return retrieved
+		}
+		bestScore = 0
+		for _, item := range scored {
+			if item.score > bestScore {
+				bestScore = item.score
+			}
+		}
+	}
+
+	threshold := bestScore
+	if bestScore >= 6 {
+		threshold = bestScore - 3
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].score == scored[j].score {
+			return scored[i].chunk.Score > scored[j].chunk.Score
+		}
+		return scored[i].score > scored[j].score
+	})
+
+	filtered := make([]store.RetrievalChunk, 0, len(scored))
+	for _, item := range scored {
+		if item.score < threshold {
+			continue
+		}
+		filtered = append(filtered, item.chunk)
+		if len(filtered) == 3 {
+			break
+		}
+	}
+	if len(filtered) == 0 {
+		return retrieved
+	}
+
+	return filtered
+}
+
+func topicalQueryTokens(query string) []string {
+	seen := make(map[string]struct{})
+	tokens := make([]string, 0)
+	for _, token := range definitionSubjectTokens(query) {
+		for _, variant := range expandTopicalVariants(token) {
+			if variant == "" {
+				continue
+			}
+			if _, exists := seen[variant]; exists {
+				continue
+			}
+			seen[variant] = struct{}{}
+			tokens = append(tokens, variant)
+		}
+	}
+
+	if len(tokens) > 0 {
+		return tokens
+	}
+
+	for _, token := range tokenizeQuery(query) {
+		if len([]rune(token)) < 4 || isLikelyStopword(token) {
+			continue
+		}
+		for _, variant := range expandTopicalVariants(token) {
+			if variant == "" {
+				continue
+			}
+			if _, exists := seen[variant]; exists {
+				continue
+			}
+			seen[variant] = struct{}{}
+			tokens = append(tokens, variant)
+		}
+	}
+
+	return tokens
+}
+
+func definitionSubjectTokens(query string) []string {
+	normalized := strings.ToLower(strings.TrimSpace(query))
+	for _, prefix := range []string{
+		"что такое ", "что значит ", "что означает ", "кто такой ", "кто такая ",
+		"what is ", "who is ", "define ", "definition of ",
+	} {
+		if strings.HasPrefix(normalized, prefix) {
+			normalized = strings.TrimSpace(strings.TrimPrefix(normalized, prefix))
+			break
+		}
+	}
+
+	tokens := make([]string, 0)
+	for _, token := range tokenizeQuery(normalized) {
+		if len([]rune(token)) < 3 || isLikelyStopword(token) {
+			continue
+		}
+		tokens = append(tokens, token)
+		if len(tokens) == 2 {
+			break
+		}
+	}
+
+	return tokens
+}
+
+func expandTopicalVariants(token string) []string {
+	token = strings.ToLower(strings.TrimSpace(token))
+	if token == "" {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	out := make([]string, 0, 5)
+	add := func(value string) {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			return
+		}
+		if _, exists := seen[value]; exists {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+
+	add(token)
+	add(ftsPrefixToken(token))
+
+	runes := []rune(token)
+	if len(runes) >= 4 {
+		last := runes[len(runes)-1]
+		base := strings.TrimSpace(string(runes[:len(runes)-1]))
+		switch last {
+		case 'ы', 'и':
+			add(base)
+			add(base + "а")
+			add(base + "я")
+		case 'а', 'я':
+			add(base)
+		}
+	}
+
+	return out
+}
+
+func chunkTopicScore(chunk store.RetrievalChunk, focusTokens []string) int {
+	if len(focusTokens) == 0 {
+		return 0
+	}
+
+	content := strings.ToLower(chunk.Content)
+	title := strings.ToLower(chunk.DocTitle)
+	filename := strings.ToLower(chunk.DocFilename)
+	section := strings.ToLower(metadataString(chunk.Metadata, "section"))
+
+	score := 0
+	kind := metadataString(chunk.Metadata, "chunk_kind")
+	for _, token := range focusTokens {
+		score += countOccurrences(content, token) * 3
+		score += countOccurrences(title, token)
+		score += countOccurrences(filename, token)
+		score += countOccurrences(section, token) * 2
+		if strings.Contains(content, token+" — это") || strings.Contains(content, token+" - это") || strings.Contains(content, token+" это") {
+			score += 10
+		}
+		if strings.Contains(title, token) && kind == "definition" {
+			score += 4
+		}
+	}
+	switch kind {
+	case "definition":
+		score += 4
+	case "procedure":
+		score -= 2
+	}
+	score += definitionSourceScore(chunk)
+
+	return score
+}
+
+func definitionSourceScore(chunk store.RetrievalChunk) int {
+	score := 0
+
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(chunk.DocFilename))) {
+	case ".txt":
+		score += 8
+	case ".md", ".markdown":
+		score += 7
+	case ".pdf":
+		score -= 4
+	}
+
+	content := strings.TrimSpace(chunk.Content)
+	if len([]rune(content)) <= 900 {
+		score += 2
+	}
+	if looksOCRNoisy(content) {
+		score -= 8
+	}
+
+	return score
+}
+
+func looksOCRNoisy(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return false
+	}
+
+	score := 0
+	if strings.Contains(trimmed, "\\3") || strings.Contains(trimmed, " . . . ") {
+		score += 3
+	}
+	if strings.Contains(trimmed, "   ") {
+		score++
+	}
+	if strings.Count(trimmed, "  ") >= 4 {
+		score++
+	}
+	if strings.Count(trimmed, "\\") >= 2 {
+		score++
+	}
+
+	digits := 0
+	asciiPunct := 0
+	runes := []rune(trimmed)
+	for _, r := range runes {
+		if unicode.IsDigit(r) {
+			digits++
+			continue
+		}
+		switch r {
+		case '\\', '/', '|', '[', ']', '{', '}', '%':
+			asciiPunct++
+		}
+	}
+	if len(runes) > 0 {
+		if float64(digits)/float64(len(runes)) > 0.08 {
+			score++
+		}
+		if float64(asciiPunct)/float64(len(runes)) > 0.03 {
+			score++
+		}
+	}
+
+	return score >= 3
+}
+
+func countOccurrences(value, token string) int {
+	if value == "" || token == "" {
+		return 0
+	}
+
+	count := 0
+	offset := 0
+	for {
+		index := strings.Index(value[offset:], token)
+		if index == -1 {
+			break
+		}
+		count++
+		offset += index + len(token)
+		if offset >= len(value) {
+			break
+		}
+	}
+
+	return count
 }
 
 func (s *Server) trackTopDocumentHits(ctx context.Context, orgID string, citations []retrievalCitation) {
@@ -1736,6 +2223,23 @@ func normalizeRetrievalLimits(topK, candidateK int) (int, int) {
 	return topK, candidateK
 }
 
+func adjustRetrievalLimitsForQuery(query string, topK, candidateK int) (int, int, string) {
+	topK, candidateK = normalizeRetrievalLimits(topK, candidateK)
+	queryIntent := detectQueryIntent(query)
+
+	// Keep "fast" from degrading simple definitional questions too aggressively.
+	if queryIntent == "definition" {
+		if topK < 8 {
+			topK = 8
+		}
+		if candidateK < 32 {
+			candidateK = 32
+		}
+	}
+
+	return topK, candidateK, queryIntent
+}
+
 func (s *Server) generateAssistantAnswer(
 	ctx context.Context,
 	user store.User,
@@ -1747,6 +2251,34 @@ func (s *Server) generateAssistantAnswer(
 	kbVersion int64,
 	retrieved []store.RetrievalChunk,
 	citations []retrievalCitation,
+) (string, error) {
+	return s.generateAssistantAnswerWithHistory(
+		ctx,
+		user,
+		mode,
+		query,
+		topK,
+		candidateK,
+		kbVersion,
+		retrieved,
+		citations,
+		s.buildChatHistoryForLLM(ctx, user.OrgID, chatID, mode, query),
+		"",
+	)
+}
+
+func (s *Server) generateAssistantAnswerWithHistory(
+	ctx context.Context,
+	user store.User,
+	mode string,
+	query string,
+	topK int,
+	candidateK int,
+	kbVersion int64,
+	retrieved []store.RetrievalChunk,
+	citations []retrievalCitation,
+	history []llm.Message,
+	webContext string,
 ) (string, error) {
 	answerKey := s.buildAnswerCacheKey(user.OrgID, user.RoleID, mode, kbVersion, query, topK, candidateK)
 	useStrictAnswerCache := mode == store.ModeStrict
@@ -1771,8 +2303,7 @@ func (s *Server) generateAssistantAnswer(
 		return answer, nil
 	}
 
-	contextText := s.buildAssistantContext(ctx, user, mode, query, retrieved)
-	history := s.buildChatHistoryForLLM(ctx, user.OrgID, chatID, mode, query)
+	contextText := s.buildAssistantContextFromPrefetch(ctx, user, mode, query, retrieved, webContext)
 	completion, completionErr := s.completeWithContext(ctx, mode, query, contextText, history)
 	if completionErr != nil || strings.TrimSpace(completion) == "" {
 		if mode == store.ModeStrict {
@@ -1793,13 +2324,18 @@ func (s *Server) generateAssistantAnswer(
 		if retryErr != nil {
 			return "", fmt.Errorf("strict retry failed: %w", retryErr)
 		}
-		if !isStrictCompletionValid(strings.TrimSpace(retry), retrieved) {
+		retry = strings.TrimSpace(retry)
+		if !isStrictCompletionValid(retry, retrieved) {
+			if heuristic := buildStrictHeuristicAnswer(retrieved); heuristic != "" && isStrictCompletionValid(heuristic, retrieved) {
+				return heuristic, nil
+			}
+
 			fallback := "Недостаточно данных в базе знаний."
 			// Do not cache "guard fallback" when retrieved context exists: a transient
 			// formatting/quote mismatch should not poison the cache for 10 minutes.
 			return fallback, nil
 		}
-		completion = strings.TrimSpace(retry)
+		completion = retry
 	}
 
 	if mode == store.ModeStrict {
@@ -1811,6 +2347,27 @@ func (s *Server) generateAssistantAnswer(
 	}
 
 	return completion, nil
+}
+
+func (s *Server) preloadChatHistory(
+	ctx context.Context,
+	orgID string,
+	chatID string,
+	mode string,
+	currentQuery string,
+) <-chan []llm.Message {
+	ch := make(chan []llm.Message, 1)
+	go func() {
+		ch <- s.buildChatHistoryForLLM(ctx, orgID, chatID, mode, currentQuery)
+	}()
+	return ch
+}
+
+func (s *Server) awaitChatHistory(ch <-chan []llm.Message) []llm.Message {
+	if ch == nil {
+		return nil
+	}
+	return <-ch
 }
 
 func stripStrictFallbackTail(answer string) string {
@@ -2126,6 +2683,77 @@ func splitStrictSections(answer string) (shortAnswer string, quotes string, ok b
 	return shortAnswer, quotes, true
 }
 
+func buildStrictHeuristicAnswer(retrieved []store.RetrievalChunk) string {
+	if len(retrieved) == 0 {
+		return ""
+	}
+
+	bullets := extractStrictBulletCandidates(retrieved[0].Content, 2)
+	if len(bullets) == 0 {
+		return ""
+	}
+
+	var shortBuilder strings.Builder
+	var quoteBuilder strings.Builder
+	shortBuilder.WriteString("Краткий ответ:\n")
+	quoteBuilder.WriteString("Цитаты:\n")
+
+	for _, bullet := range bullets {
+		shortBuilder.WriteString("- ")
+		shortBuilder.WriteString(bullet)
+		shortBuilder.WriteString(" [1]\n")
+
+		quoteBuilder.WriteString("- \"")
+		quoteBuilder.WriteString(bullet)
+		quoteBuilder.WriteString("\" [1]\n")
+	}
+
+	return strings.TrimSpace(shortBuilder.String()) + "\n\n" + strings.TrimSpace(quoteBuilder.String())
+}
+
+func extractStrictBulletCandidates(content string, limit int) []string {
+	if limit <= 0 {
+		limit = 2
+	}
+
+	lines := strings.Split(content, "\n")
+	candidates := make([]string, 0, limit)
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, "- ") {
+			continue
+		}
+
+		line = strings.TrimSpace(strings.TrimPrefix(line, "- "))
+		if len([]rune(line)) < 8 {
+			continue
+		}
+		candidates = append(candidates, line)
+		if len(candidates) == limit {
+			break
+		}
+	}
+
+	if len(candidates) > 0 {
+		return candidates
+	}
+
+	for _, part := range strings.FieldsFunc(strings.TrimSpace(content), func(r rune) bool {
+		return r == '.' || r == '!' || r == '?'
+	}) {
+		line := strings.TrimSpace(part)
+		if len([]rune(line)) < 8 {
+			continue
+		}
+		candidates = append(candidates, line)
+		if len(candidates) == limit {
+			break
+		}
+	}
+
+	return candidates
+}
+
 func sectionRemainder(line string) string {
 	// Common patterns: "Краткий ответ: ...", "Цитаты: ...".
 	if idx := strings.Index(line, ":"); idx >= 0 && idx+1 < len(line) {
@@ -2329,6 +2957,24 @@ func (s *Server) buildAssistantContext(
 	query string,
 	retrieved []store.RetrievalChunk,
 ) string {
+	return s.buildAssistantContextFromPrefetch(ctx, user, mode, query, retrieved, "")
+}
+
+func (s *Server) buildAssistantContextFromPrefetch(
+	ctx context.Context,
+	user store.User,
+	mode string,
+	query string,
+	retrieved []store.RetrievalChunk,
+	webContext string,
+) string {
+	if webContext == "" && mode == store.ModeUnstrict && s.shouldUseWebSearchContext(user, mode) {
+		webContext = s.buildWebSearchContext(ctx, query)
+	}
+	return s.composeAssistantContext(mode, retrieved, webContext)
+}
+
+func (s *Server) composeAssistantContext(mode string, retrieved []store.RetrievalChunk, webContext string) string {
 	maxChars := s.llmMaxContextChars
 	if maxChars <= 0 {
 		maxChars = 7000
@@ -2337,11 +2983,7 @@ func (s *Server) buildAssistantContext(
 	if mode != store.ModeUnstrict {
 		return contextText
 	}
-	if !s.shouldUseWebSearchContext(user, mode) {
-		return contextText
-	}
-
-	webContext := s.buildWebSearchContext(ctx, query)
+	webContext = strings.TrimSpace(webContext)
 	if webContext == "" {
 		return contextText
 	}
@@ -2396,6 +3038,30 @@ func (s *Server) buildWebSearchContext(ctx context.Context, query string) string
 	}
 
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func (s *Server) preloadWebSearchContext(
+	ctx context.Context,
+	user store.User,
+	mode string,
+	query string,
+) <-chan string {
+	if !s.shouldUseWebSearchContext(user, mode) {
+		return nil
+	}
+
+	ch := make(chan string, 1)
+	go func() {
+		ch <- s.buildWebSearchContext(ctx, query)
+	}()
+	return ch
+}
+
+func (s *Server) awaitWebSearchContext(ch <-chan string) string {
+	if ch == nil {
+		return ""
+	}
+	return <-ch
 }
 
 func canUseUnstrict(permissions []string, allowLegacyToggle bool) bool {
