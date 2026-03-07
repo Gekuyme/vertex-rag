@@ -6,7 +6,7 @@ COMPOSE_SELFHOST := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE)
 
 .PHONY: help up up-core up-build rebuild rebuild-web rebuild-api rebuild-worker down ps logs logs-api logs-web logs-worker \
 	stop-web \
-	migrate migrate-extensions migrate-auth migrate-docs migrate-kb-version migrate-embedding-vector migrate-chat-settings migrate-unstrict-backfill reingest-all \
+	migrate migrate-extensions migrate-auth migrate-docs migrate-kb-version migrate-embedding-vector migrate-chat-settings migrate-unstrict-backfill migrate-hnsw-index reingest-all \
 	test test-api test-worker test-integration test-integration-acl test-integration-mode test-integration-pdf test-integration-retrieval test-integration-cache \
 	test-e2e \
 	build-web dev-web health smoke-user smoke-role-acl smoke-mode-toggle smoke-pdf-ingest smoke-retrieval-stability smoke-cache-speed smoke-query-matrix smoke-query-matrix-lite up-selfhost pull-selfhost
@@ -99,7 +99,7 @@ logs-web:
 logs-worker:
 	$(COMPOSE) logs -f worker
 
-migrate: migrate-extensions migrate-auth migrate-docs migrate-kb-version migrate-embedding-vector migrate-chat-settings migrate-unstrict-backfill
+migrate: migrate-extensions migrate-auth migrate-docs migrate-kb-version migrate-embedding-vector migrate-chat-settings migrate-unstrict-backfill migrate-hnsw-index
 
 migrate-extensions:
 	cat db/migrations/000001_enable_extensions.up.sql | $(COMPOSE) exec -T postgres psql -U vertex -d vertex_rag
@@ -121,6 +121,9 @@ migrate-chat-settings:
 
 migrate-unstrict-backfill:
 	cat db/migrations/000007_backfill_can_use_unstrict.up.sql | $(COMPOSE) exec -T postgres psql -U vertex -d vertex_rag
+
+migrate-hnsw-index:
+	cat db/migrations/000008_document_chunks_embedding_hnsw.up.sql | $(COMPOSE) exec -T postgres psql -U vertex -d vertex_rag
 
 reingest-all:
 	@token="$$(curl -fsS -X POST http://localhost:8080/auth/login -H "Content-Type: application/json" -d "{\"email\":\"$${OWNER_EMAIL:-owner@vertex.local}\",\"password\":\"$${OWNER_PASSWORD:-Password123!}\"}" | jq -r '.access_token')" && \

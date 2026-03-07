@@ -1,160 +1,274 @@
 # Vertex RAG
 
-Initial MVP scaffold for a business-focused RAG assistant platform.
+Open-source, self-hosted, role-aware RAG platform for teams.
 
-## Structure
+Vertex RAG helps organizations upload internal documents, control access by role, and chat with a shared knowledge base in two modes:
 
-- `apps/web` - Next.js frontend
-- `apps/api` - Go API service
-- `apps/worker` - Go worker service
-- `deploy/compose` - Docker Compose setup
-- `db/migrations` - SQL migrations
-- `scripts` - helper scripts
+- `strict`: grounded answers with citations from approved internal documents.
+- `unstrict`: broader answers that can optionally use web search when the role allows it.
 
-## Runtime requirements
+The project is designed for teams that need more than a demo chatbot: document access control, predictable ingestion, reproducible local setup, and flexible model providers for both LLMs and embeddings.
 
-- Go `1.24+` for API and worker services.
-- Docker Desktop (or Docker Engine + Compose plugin) for full stack.
+## Why Vertex RAG
+
+- Role-aware knowledge access with document visibility restricted by role.
+- Cited internal answers for compliance-heavy or trust-sensitive workflows.
+- Optional web-augmented responses for broader research and exploratory use cases.
+- Self-hosted architecture with PostgreSQL, pgvector, Redis, and S3-compatible storage.
+- Pluggable providers for local development and production deployments.
+
+## Core capabilities
+
+- Authentication with owner bootstrap, login, refresh, logout, and account settings.
+- Chat history, streaming responses, and per-message `strict` / `unstrict` mode selection.
+- Document upload, background ingestion, reingest flows, and retrieval debugging.
+- Role and user administration with fine-grained permissions.
+- Retrieval and answer caching keyed by organization, role, query, mode, and knowledge-base version.
+- Smoke and integration checks for ACL behavior, mode switching, PDF ingestion, retrieval stability, and cache speed.
+
+## Architecture
+
+```text
+Next.js web app
+        |
+        v
+     Go API  ---> Redis cache
+        |
+        +---> PostgreSQL + pgvector
+        |
+        +---> S3 / MinIO object storage
+        |
+        +---> LLM provider (local / OpenAI / Gemini / Ollama)
+        |
+        +---> Web search provider (optional, unstrict only)
+
+Go worker
+  |
+  +---> pulls ingest jobs from Redis queue
+  +---> downloads files from object storage
+  +---> extracts text, chunks content, builds embeddings
+  +---> writes chunks and vectors back to PostgreSQL
+```
+
+## Supported providers
+
+LLM providers:
+
+- `local`
+- `openai`
+- `gemini`
+- `ollama`
+
+Embedding providers:
+
+- `local`
+- `openai`
+- `ollama`
+
+Supported document formats for ingestion:
+
+- `pdf`
+- `docx`
+- `txt`
+- `md`
+- other `text/*` MIME types
+
+## Repository layout
+
+- `apps/web`: Next.js frontend.
+- `apps/api`: Go API service.
+- `apps/worker`: Go worker service.
+- `db/migrations`: SQL migrations.
+- `deploy/compose`: Docker Compose setup and self-host notes.
+- `scripts`: smoke and operational helper scripts.
 
 ## Quick start
 
-1. Copy environment template:
+### 1. Create local configuration
 
 ```bash
 cp .env.example .env
 ```
 
-2. Start local services:
+### 2. Start the local stack
 
 ```bash
 docker compose --env-file .env -f deploy/compose/docker-compose.yml -f deploy/compose/docker-compose.dev.yml up --build
 ```
 
-3. Apply database migrations:
+This starts:
+
+- web app on `http://localhost:3000`
+- API on `http://localhost:8080`
+- worker on `http://localhost:8082`
+- PostgreSQL with `pgvector`
+- Redis
+- MinIO
+- optional Ollama when using the `local-llm` profile
+
+To include Ollama:
 
 ```bash
-cat db/migrations/000001_enable_extensions.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
-cat db/migrations/000002_auth_rbac.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
-cat db/migrations/000003_documents.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
-cat db/migrations/000004_kb_version.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
-cat db/migrations/000005_document_embedding_vector.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
-cat db/migrations/000006_chat_settings.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
-cat db/migrations/000007_backfill_can_use_unstrict.up.sql | docker compose -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
+docker compose --env-file .env -f deploy/compose/docker-compose.yml -f deploy/compose/docker-compose.dev.yml --profile local-llm up --build
 ```
 
-4. Check health endpoints:
+### 3. Apply database migrations
 
 ```bash
-curl http://localhost:8080/healthz
-curl http://localhost:8082/healthz
+make migrate
 ```
 
-## Make targets
+### 4. Verify services
 
-- `make rebuild` - rebuild and restart all services.
-- `make up-selfhost` - run prebuilt private images only (no local build).
-- `make pull-selfhost` - pull prebuilt private images.
-- `make migrate` - apply SQL migrations (`000001`..`000007`).
-- `make reingest-all` - queue reingest for every document.
-- `make test` - run API and worker tests.
-- `make test-e2e` - run Playwright e2e smoke (`login -> upload -> strict chat`).
-- `make test-integration` - run integration test targets.
-- `make test-integration-acl` - run ACL integration scenario.
-- `make test-integration-mode` - verify strict/unstrict toggle applies to next request only.
-- `make test-integration-pdf` - verify PDF ingest `ready` + non-empty embeddings + strict citations.
-- `make test-integration-retrieval` - verify retrieval stability + unstrict RBAC on internal chunks.
-- `make test-integration-cache` - verify repeated strict query gets faster from cache.
-- `make smoke-role-acl` - run role ACL smoke scenario (restricted document visibility by role).
-- `make ps` - show compose status.
+```bash
+make health
+```
 
-## Embeddings providers
+### 5. Create the first owner account
 
-API and worker support `EMBED_PROVIDER=local|openai|ollama`:
+Use the UI or call the bootstrap endpoint:
 
-- `local` - deterministic local embeddings for dev/no external dependency.
-- `openai` - set `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, and `EMBED_MODEL_OPENAI`.
-- `ollama` - set `OLLAMA_BASE_URL` and `EMBED_MODEL_OLLAMA` (use compose `local-llm` profile if needed).
-  - Recommended for real retrieval quality: `EMBED_PROVIDER=ollama` and `EMBED_MODEL_OLLAMA=nomic-embed-text`.
-  - After changing embedding provider/model, run `make reingest-all`.
+```bash
+curl -X POST http://localhost:8080/auth/register_owner \
+  -H "Content-Type: application/json" \
+  -d '{
+    "organization_name": "Vertex Demo",
+    "email": "owner@vertex.local",
+    "password": "Password123!"
+  }'
+```
 
-## LLM providers
+## Development workflow
 
-API supports `LLM_PROVIDER=local|openai|ollama`:
+Common commands:
 
-- `local` - deterministic fallback for local development.
-- `openai` - set `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, and `LLM_MODEL_OPENAI`.
-- `ollama` - set `OLLAMA_BASE_URL` and `LLM_MODEL_OLLAMA`.
-  - If Ollama runs on host machine (outside compose), use `OLLAMA_BASE_URL=http://host.docker.internal:11434`.
-  - If Ollama runs as compose service (`--profile local-llm`), use `OLLAMA_BASE_URL=http://ollama:11434`.
-  - Optional tuning: `LLM_OLLAMA_NUM_CTX` (default `4096`) and `LLM_OLLAMA_KEEP_ALIVE` (default `30m`).
+- `make up`: start the full stack in background.
+- `make up-core`: start API, worker, Postgres, Redis, and MinIO without the web container.
+- `make rebuild`: rebuild and restart all services.
+- `make stop-web`: free port `3000` for local Next.js development.
+- `make dev-web`: run the Next.js app locally with HMR.
+- `make ps`: inspect compose service status.
+- `make logs-api`
+- `make logs-worker`
+- `make logs-web`
+- `make reingest-all`: queue reingestion for every document.
 
-Provider reliability controls:
+Run services directly without Docker when useful:
 
-- `LLM_HTTP_TIMEOUT` (default `60s`)
-- `LLM_MAX_RETRIES` (default `2`)
-- `LLM_RETRY_BACKOFF` (default `400ms`)
-- `LLM_MAX_CONTEXT_CHARS` (default `7000`)
+```bash
+cd apps/api && go run ./cmd/api
+cd apps/worker && go run ./cmd/worker
+cd apps/web && npm install && npm run dev
+```
 
-## Unstrict web-search (optional)
+## Model and search configuration
 
-Unstrict mode can enrich answers with web snippets behind a feature flag:
+### Embeddings
+
+Set `EMBED_PROVIDER=local|openai|ollama`.
+
+- `local`: deterministic embeddings for development and tests.
+- `openai`: requires `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, and `EMBED_MODEL_OPENAI`.
+- `ollama`: requires `OLLAMA_BASE_URL` and `EMBED_MODEL_OLLAMA`.
+
+Recommended local retrieval setup:
+
+```bash
+EMBED_PROVIDER=ollama
+EMBED_MODEL_OLLAMA=nomic-embed-text
+```
+
+After changing the embedding provider or model, reingest documents:
+
+```bash
+make reingest-all
+```
+
+### LLMs
+
+Set `LLM_PROVIDER=local|openai|gemini|ollama`.
+
+- `local`: deterministic fallback for local development.
+- `openai`: requires `OPENAI_API_KEY`, optional `OPENAI_BASE_URL`, and `LLM_MODEL_OPENAI`.
+- `gemini`: requires `GEMINI_API_KEY`, optional `GEMINI_BASE_URL`, and `LLM_MODEL_GEMINI`.
+- `ollama`: uses `LLM_OLLAMA_BASE_URL`, `LLM_MODEL_OLLAMA`, and optional strict/unstrict overrides.
+
+Reliability controls:
+
+- `LLM_HTTP_TIMEOUT`
+- `LLM_MAX_RETRIES`
+- `LLM_RETRY_BACKOFF`
+- `LLM_MAX_CONTEXT_CHARS`
+
+### Web search in `unstrict`
+
+Optional web search is available only in `unstrict` mode and only for roles that are allowed to use it.
+
+Configuration:
 
 - `WEB_SEARCH_ENABLED=true|false`
 - `SEARCH_API_PROVIDER=brave`
 - `SEARCH_API_KEY=...`
-- `SEARCH_MAX_RESULTS` (default `5`)
-- `SEARCH_HTTP_TIMEOUT` (default `6s`)
+- `SEARCH_MAX_RESULTS`
+- `SEARCH_HTTP_TIMEOUT`
 
-Web-search context is only injected in `unstrict` mode and only for roles with `can_toggle_web_search`.
+## Security and access model
 
-`unstrict` access itself is controlled by `can_use_unstrict`. For backward compatibility one rollout supports `UNSTRICT_LEGACY_TOGGLE_WEB_SEARCH=true`, which temporarily treats `can_toggle_web_search` as sufficient for `unstrict`.
+- `APP_ENV=production` requires a non-default `JWT_SECRET`.
+- `CORS_ORIGIN` supports a comma-separated allowlist.
+- Cookie behavior is controlled by `COOKIE_SECURE` and `COOKIE_SAMESITE`.
+- Basic API rate limiting is controlled by `RATE_LIMIT_RPM` and `RATE_LIMIT_BURST`.
+- `strict` answers are designed to stay grounded in indexed internal content.
+- `unstrict` access and web search access are permission-gated at the role level.
 
-## Redis cache (RAG)
+## Validation and testing
 
-API supports Redis cache for retrieval and strict answers:
+Unit and e2e coverage already exist for key flows.
 
-- `CACHE_ENABLED=true|false`
-- `CACHE_RETRIEVAL_TTL` (default `10m`)
-- `CACHE_ANSWER_TTL` (default `10m`)
-- `CACHE_UNSTRICT_ANSWER=true|false` (default `false`)
+- `make test`: run Go unit tests for API and worker.
+- `make test-e2e`: run Playwright end-to-end smoke.
+- `make test-integration`: run smoke-backed integration suite.
+- `make smoke-role-acl`
+- `make smoke-mode-toggle`
+- `make smoke-pdf-ingest`
+- `make smoke-retrieval-stability`
+- `make smoke-cache-speed`
+- `make smoke-query-matrix`
 
-Cache keys include `org_id`, `role_id`, `mode`, normalized query hash, and `kb_version`.
+Script details are documented in [scripts/README.md](scripts/README.md).
 
-## Security/hardening
+## Self-hosting
 
-- `APP_ENV=production` requires non-default `JWT_SECRET`.
-- `CORS_ORIGIN` supports comma-separated allowlist.
-- Cookie controls: `COOKIE_SECURE`, `COOKIE_SAMESITE=lax|strict|none`.
-- Basic API rate limiting: `RATE_LIMIT_RPM`, `RATE_LIMIT_BURST`.
+For private-registry deployment and production-oriented notes, see [deploy/compose/SELF_HOST.md](deploy/compose/SELF_HOST.md).
 
-## Self-host guide
+## Current API surface
 
-- See `deploy/compose/SELF_HOST.md` for private registry deployment, migrations, and Ollama variants.
+Implemented endpoints include:
 
-## Implemented API endpoints (current)
+- auth: register owner, login, refresh, logout, current user, settings
+- chats: list, create, inspect, delete, list messages, create message, stream message
+- admin: list and manage roles, list users, update user role, retrieval debug, top-doc stats
+- documents: list, upload, reingest one, reingest all
 
-- `POST /auth/register_owner`
-- `POST /auth/login`
-- `POST /auth/refresh`
-- `POST /auth/logout`
-- `GET /me`
-- `GET /me/settings`
-- `PATCH /me/settings`
-- `GET /roles`
-- `GET /chats`
-- `POST /chats`
-- `GET /chats/{id}`
-- `DELETE /chats/{id}`
-- `GET /chats/{id}/messages`
-- `POST /chats/{id}/messages`
-- `POST /chats/{id}/messages/stream`
-- `GET /admin/roles`
-- `POST /admin/roles`
-- `PATCH /admin/roles/{id}`
-- `DELETE /admin/roles/{id}`
-- `GET /admin/users`
-- `PATCH /admin/users/{id}/role`
-- `POST /admin/retrieval/debug`
-- `GET /admin/stats/top-docs`
-- `GET /documents`
-- `POST /documents/upload`
+See [apps/api/internal/httpserver/server.go](apps/api/internal/httpserver/server.go) for the current route map.
+
+## Roadmap
+
+Near-term priorities:
+
+- improve public docs and examples for contributors
+- expand automated tests around retrieval quality and failure handling
+- add public evaluation datasets and benchmarks for strict-answer workflows
+- improve observability around ingestion, retrieval, and latency
+- keep provider integrations interchangeable across local and hosted setups
+
+## Open source readiness
+
+This repository is intended to be a public, contributor-friendly project.
+
+- License: [MIT](LICENSE)
+- Contributing guide: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- Security policy: [SECURITY.md](SECURITY.md)
+
+For OpenAI application positioning, see [docs/openai-codex-open-source-fund.md](docs/openai-codex-open-source-fund.md).

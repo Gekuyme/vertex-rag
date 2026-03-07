@@ -52,6 +52,8 @@ cat db/migrations/000003_documents.up.sql | docker compose --env-file .env -f de
 cat db/migrations/000004_kb_version.up.sql | docker compose --env-file .env -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
 cat db/migrations/000005_document_embedding_vector.up.sql | docker compose --env-file .env -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
 cat db/migrations/000006_chat_settings.up.sql | docker compose --env-file .env -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
+cat db/migrations/000007_backfill_can_use_unstrict.up.sql | docker compose --env-file .env -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
+cat db/migrations/000008_document_chunks_embedding_hnsw.up.sql | docker compose --env-file .env -f deploy/compose/docker-compose.yml exec -T postgres psql -U vertex -d vertex_rag
 ```
 
 ## 5) Ollama modes
