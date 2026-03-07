@@ -2,16 +2,18 @@
 
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getMessages } from "../../lib/i18n/messages";
+import { useI18n } from "./I18nProvider";
+import LocaleSwitcher from "./LocaleSwitcher";
 
 const APIBaseURL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
 const accessTokenStorageKey = "vertex_access_token";
+const noKnowledgeMessages: string[] = [getMessages("ru").chat.noKnowledge, getMessages("en").chat.noKnowledge];
 
 type ConsoleView = "chat" | "knowledge" | "users" | "account";
 type SettingsTab = "knowledge" | "users" | "roles" | "account";
 type OnboardingStep = {
   selector: string;
-  title: string;
-  description: string;
 };
 
 type User = {
@@ -92,6 +94,7 @@ type RequestOptions = {
   body?: unknown;
   token?: string;
   signal?: AbortSignal;
+  requestFailureMessage?: (status: number) => string;
 };
 
 type StreamDonePayload = {
@@ -109,54 +112,26 @@ type ConsoleAppProps = {
   initialView?: ConsoleView;
 };
 
-const rolePermissionOptions = [
-  { key: "can_upload_docs", label: "Загрузка документов" },
-  { key: "can_manage_users", label: "Управление пользователями" },
-  { key: "can_manage_roles", label: "Управление ролями" },
-  { key: "can_manage_documents", label: "Управление документами" },
-  { key: "can_toggle_web_search", label: "Web-search в unstrict" },
-  { key: "can_use_unstrict", label: "Использование unstrict" }
-] as const;
 const onboardingSeenStorageKey = "vertex_onboarding_seen_v1";
-const responseProfiles: Array<{
+const responseProfilePresets: Array<{
   id: ResponseProfile;
-  label: string;
   topK: number;
   candidateK: number;
 }> = [
-  { id: "fast", label: "Fast", topK: 4, candidateK: 12 },
-  { id: "balanced", label: "Balanced", topK: 8, candidateK: 32 },
-  { id: "thinking", label: "Thinking", topK: 12, candidateK: 48 }
+  { id: "fast", topK: 4, candidateK: 12 },
+  { id: "balanced", topK: 8, candidateK: 32 },
+  { id: "thinking", topK: 12, candidateK: 48 }
 ];
-const onboardingSteps: OnboardingStep[] = [
-  {
-    selector: '[data-tour="chat-nav"]',
-    title: "Навигация по чатам",
-    description: "Здесь список ваших диалогов. Переключайтесь между ними одним кликом."
-  },
-  {
-    selector: '[data-tour="chat-create"]',
-    title: "Новый чат",
-    description: "Нажмите плюс, чтобы быстро создать новый диалог."
-  },
-  {
-    selector: '[data-tour="settings-btn"]',
-    title: "Настройки",
-    description: "В настройках доступны аккаунт, роли, база знаний и выход."
-  },
-  {
-    selector: '[data-tour="upload-btn"]',
-    title: "Загрузка файла",
-    description: "Через эту кнопку открывается окно загрузки документа в базу знаний."
-  },
-  {
-    selector: '[data-tour="mode-toggle"]',
-    title: "Режим ответа",
-    description: "Выбирайте Строгий или Нестрогий режим ответа для текущего сообщения."
-  }
+const onboardingStepTargets: OnboardingStep[] = [
+  { selector: '[data-tour="chat-nav"]' },
+  { selector: '[data-tour="chat-create"]' },
+  { selector: '[data-tour="settings-btn"]' },
+  { selector: '[data-tour="upload-btn"]' },
+  { selector: '[data-tour="mode-toggle"]' }
 ];
 
 export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
+  const { messages } = useI18n();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [view, setView] = useState<ConsoleView>(initialView);
   const [isNavOpen, setIsNavOpen] = useState(false);
@@ -181,7 +156,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatID, setActiveChatID] = useState<string>("");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [draftMessage, setDraftMessage] = useState("");
   const [messageMode, setMessageMode] = useState<"strict" | "unstrict">("strict");
   const [responseProfile, setResponseProfile] = useState<ResponseProfile>("balanced");
@@ -236,17 +211,70 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     [user]
   );
   const canAccessUnstrict = canUseUnstrict || canToggleWebSearch;
+  const rolePermissionOptions = useMemo(
+    () => [
+      { key: "can_upload_docs", label: messages.roles.permissionUploadDocs },
+      { key: "can_manage_users", label: messages.roles.permissionManageUsers },
+      { key: "can_manage_roles", label: messages.roles.permissionManageRoles },
+      { key: "can_manage_documents", label: messages.roles.permissionManageDocuments },
+      { key: "can_toggle_web_search", label: messages.roles.permissionToggleWebSearch },
+      { key: "can_use_unstrict", label: messages.roles.permissionUseUnstrict }
+    ],
+    [messages]
+  );
+  const responseProfiles = useMemo(
+    () =>
+      responseProfilePresets.map((profile) => ({
+        ...profile,
+        label: messages.responseProfiles[profile.id]
+      })),
+    [messages]
+  );
+  const onboardingSteps = useMemo(
+    () =>
+      onboardingStepTargets.map((step, index) => ({
+        ...step,
+        ...messages.onboarding.steps[index]
+      })),
+    [messages]
+  );
   const isUploadReady = Boolean(selectedFile) && selectedRoleIDs.length > 0 && !isBusy;
   const uploadHint = !selectedFile
-    ? "Выберите файл для загрузки."
+    ? messages.uploadModal.selectFile
     : selectedRoleIDs.length === 0
-      ? "Выберите хотя бы одну роль доступа."
+      ? messages.uploadModal.selectRole
       : "";
   const isSettingsModalPresent = useModalPresence(isSettingsOpen, modalAnimationMs);
   const isUploadModalPresent = useModalPresence(isUploadModalOpen, modalAnimationMs);
   const isCitationPreviewPresent = useModalPresence(isCitationPreviewOpen, modalAnimationMs);
   const currentOnboardingStep = onboardingSteps[onboardingStepIndex] || null;
   const activeResponseProfile = responseProfiles.find((profile) => profile.id === responseProfile) || responseProfiles[1];
+  const currentRequestFailureMessage = messages.feedback.requestFailed;
+
+  const request = <T,>(path: string, options: RequestOptions = {}) =>
+    apiRequest<T>(path, {
+      ...options,
+      requestFailureMessage: options.requestFailureMessage || currentRequestFailureMessage
+    });
+
+  const requestMultipart = <T,>(path: string, formData: FormData, accessToken: string) =>
+    apiRequestMultipart<T>(path, formData, accessToken, currentRequestFailureMessage);
+
+  const requestStream = (
+    chatID: string,
+    body: Record<string, unknown>,
+    accessToken: string,
+    handlers: {
+      signal?: AbortSignal;
+      onPhase: (phase: StreamPhase) => void;
+      onUserMessage: (message: ChatMessage) => void;
+      onAssistantDelta: (delta: string) => void;
+    }
+  ) =>
+    streamChatMessage(chatID, body, accessToken, {
+      ...handlers,
+      requestFailureMessage: currentRequestFailureMessage
+    });
 
   useEffect(() => {
     const storedToken = window.localStorage.getItem(accessTokenStorageKey);
@@ -376,13 +404,13 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   function streamPhaseLabel(phase: StreamPhase | null, profile: ResponseProfile): string {
     switch (phase) {
       case "retrieving":
-        return profile === "fast" ? "Быстро ищет контекст" : "Ищет релевантный контекст";
+        return profile === "fast" ? messages.chat.streamRetrievingFast : messages.chat.streamRetrieving;
       case "drafting":
-        return profile === "thinking" ? "Собирает и сверяет ответ" : "Готовит ответ";
+        return profile === "thinking" ? messages.chat.streamDraftingThinking : messages.chat.streamDrafting;
       case "finalizing":
-        return "Финализирует ответ";
+        return messages.chat.streamFinalizing;
       default:
-        return profile === "thinking" ? "Думает глубже" : "Думает";
+        return profile === "thinking" ? messages.chat.streamThinkingDeep : messages.chat.streamThinking;
     }
   }
 
@@ -394,10 +422,27 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
   const modeOptions: Array<{ value: "strict" | "unstrict"; label: string }> = canAccessUnstrict
     ? [
-        { value: "strict", label: "Строгий" },
-        { value: "unstrict", label: "Нестрогий" }
+        { value: "strict", label: messages.chat.modeStrict },
+        { value: "unstrict", label: messages.chat.modeUnstrict }
       ]
-    : [{ value: "strict", label: "Строгий" }];
+    : [{ value: "strict", label: messages.chat.modeStrict }];
+
+  function getTranslatedStatus(status: string) {
+    const normalized = status.toLowerCase() as keyof typeof messages.status;
+    return messages.status[normalized] || status;
+  }
+
+  function getTranslatedPermission(permissionKey: string) {
+    return rolePermissionOptions.find((permission) => permission.key === permissionKey)?.label || permissionKey;
+  }
+
+  function formatPermissionList(permissionKeys: string[]) {
+    if (permissionKeys.length === 0) {
+      return "—";
+    }
+
+    return permissionKeys.map(getTranslatedPermission).join(", ");
+  }
 
   useEffect(() => {
     // Keep the latest message visible when chatting.
@@ -492,33 +537,33 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
   async function hydrateSession(accessToken: string) {
     try {
-      const profile = await apiRequest<User>("/me", { token: accessToken });
+      const profile = await request<User>("/me", { token: accessToken });
       setUser(profile);
 
       const [nextSettings] = await Promise.all([
-        apiRequest<UserSettings>("/me/settings", { token: accessToken }),
+        request<UserSettings>("/me/settings", { token: accessToken }),
         loadWorkspace(accessToken, profile),
         bootstrapChats(accessToken)
       ]);
       setSettings(nextSettings);
 
-      setMessage(`Вход выполнен как ${profile.email}`);
+      setMessage(messages.feedback.signedIn(profile.email));
       setError("");
       return;
     } catch {
       try {
-        const refreshed = await apiRequest<AuthResponse>("/auth/refresh", { method: "POST" });
+        const refreshed = await request<AuthResponse>("/auth/refresh", { method: "POST" });
         persistAccessToken(refreshed.access_token);
         setUser(refreshed.user);
 
         const [nextSettings] = await Promise.all([
-          apiRequest<UserSettings>("/me/settings", { token: refreshed.access_token }),
+          request<UserSettings>("/me/settings", { token: refreshed.access_token }),
           loadWorkspace(refreshed.access_token, refreshed.user),
           bootstrapChats(refreshed.access_token)
         ]);
         setSettings(nextSettings);
 
-        setMessage(`Сессия восстановлена для ${refreshed.user.email}`);
+        setMessage(messages.feedback.sessionRestored(refreshed.user.email));
         setError("");
       } catch {
         clearSession();
@@ -528,10 +573,10 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
   async function loadWorkspace(accessToken: string, profile: User) {
     const [roleResponse, documentResponse, userResponse] = await Promise.all([
-      apiRequest<{ roles: Role[] }>("/roles", { token: accessToken }),
-      apiRequest<{ documents: DocumentEntry[] }>("/documents", { token: accessToken }),
+      request<{ roles: Role[] }>("/roles", { token: accessToken }),
+      request<{ documents: DocumentEntry[] }>("/documents", { token: accessToken }),
       profile.permissions.includes("can_manage_users")
-        ? apiRequest<{ users: User[] }>("/admin/users", { token: accessToken })
+        ? request<{ users: User[] }>("/admin/users", { token: accessToken })
         : Promise.resolve(null)
     ]);
 
@@ -556,7 +601,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   }
 
   async function refreshChats(accessToken: string) {
-    const chatResponse = await apiRequest<{ chats: Chat[] }>("/chats", { token: accessToken });
+    const chatResponse = await request<{ chats: Chat[] }>("/chats", { token: accessToken });
     setChats(chatResponse.chats);
     return chatResponse.chats;
   }
@@ -571,10 +616,10 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       return;
     }
 
-    const created = await apiRequest<Chat>("/chats", { method: "POST", token: accessToken, body: { title: "" } });
+    const created = await request<Chat>("/chats", { method: "POST", token: accessToken, body: { title: "" } });
     setChats([created]);
     setActiveChatID(created.id);
-    setMessages([]);
+    setChatMessages([]);
   }
 
   async function loadChatMessages(accessToken: string, chatID: string) {
@@ -583,12 +628,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     chatLoadAbortRef.current = controller;
 
     try {
-      const response = await apiRequest<{ chat: Chat; messages: ChatMessage[] }>(`/chats/${chatID}/messages`, {
+      const response = await request<{ chat: Chat; messages: ChatMessage[] }>(`/chats/${chatID}/messages`, {
         token: accessToken,
         signal: controller.signal
       });
       if (chatLoadAbortRef.current === controller) {
-        setMessages(response.messages);
+        setChatMessages(response.messages);
       }
     } catch (requestError) {
       if (!isAbortError(requestError)) {
@@ -609,7 +654,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     try {
       let authResponse: AuthResponse;
       if (mode === "register") {
-        authResponse = await apiRequest<AuthResponse>("/auth/register_owner", {
+        authResponse = await request<AuthResponse>("/auth/register_owner", {
           method: "POST",
           body: {
             organization_name: organizationName,
@@ -618,7 +663,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
           }
         });
       } else {
-        authResponse = await apiRequest<AuthResponse>("/auth/login", {
+        authResponse = await request<AuthResponse>("/auth/login", {
           method: "POST",
           body: { email, password }
         });
@@ -628,7 +673,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       setUser(authResponse.user);
 
       const [nextSettings] = await Promise.all([
-        apiRequest<UserSettings>("/me/settings", { token: authResponse.access_token }),
+        request<UserSettings>("/me/settings", { token: authResponse.access_token }),
         loadWorkspace(authResponse.access_token, authResponse.user),
         bootstrapChats(authResponse.access_token)
       ]);
@@ -636,11 +681,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
       setMessage(
         mode === "register"
-          ? `Организация создана. Вход выполнен как ${authResponse.user.email}.`
-          : `Вход выполнен как ${authResponse.user.email}.`
+          ? messages.feedback.organizationCreated(authResponse.user.email)
+          : messages.feedback.signedIn(authResponse.user.email)
       );
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(errorMessage(requestError, messages.feedback.unexpectedError));
     } finally {
       setIsBusy(false);
     }
@@ -655,7 +700,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setMessage("");
     setError("");
     try {
-      await apiRequest(`/admin/users/${userID}/role`, {
+      await request(`/admin/users/${userID}/role`, {
         method: "PATCH",
         token,
         body: { role_id: nextRoleID }
@@ -672,9 +717,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
             : entry
         )
       );
-      setMessage("Роль пользователя обновлена.");
+      setMessage(messages.feedback.userRoleUpdated);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(errorMessage(requestError, messages.feedback.unexpectedError));
     } finally {
       setIsBusy(false);
     }
@@ -683,11 +728,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   async function onUploadDocument(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedFile) {
-      setError("Выберите файл перед загрузкой.");
+      setError(messages.uploadModal.selectFile);
       return;
     }
     if (selectedRoleIDs.length === 0) {
-      setError("Выберите хотя бы одну роль.");
+      setError(messages.uploadModal.selectRole);
       return;
     }
 
@@ -704,7 +749,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
         formData.append("allowed_role_ids", String(roleID));
       });
 
-      await apiRequestMultipart<DocumentEntry>("/documents/upload", formData, token);
+      await requestMultipart<DocumentEntry>("/documents/upload", formData, token);
       if (user) {
         await loadWorkspace(token, user);
       }
@@ -713,9 +758,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       setDocumentTitle("");
       setSelectedRoleIDs([]);
       setIsUploadModalOpen(false);
-      setMessage("Документ загружен и отправлен в индексацию.");
+      setMessage(messages.feedback.documentUploaded);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(errorMessage(requestError, messages.feedback.unexpectedError));
     } finally {
       setIsBusy(false);
     }
@@ -729,14 +774,14 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setMessage("");
     setError("");
     try {
-      await apiRequest(`/documents/${documentID}/reingest`, {
+      await request(`/documents/${documentID}/reingest`, {
         method: "POST",
         token
       });
       await loadWorkspace(token, user);
-      setMessage("Документ отправлен в переиндексацию.");
+      setMessage(messages.feedback.documentReingest);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(errorMessage(requestError, messages.feedback.unexpectedError));
     } finally {
       setIsBusy(false);
     }
@@ -750,14 +795,14 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setMessage("");
     setError("");
     try {
-      const response = await apiRequest<{ scheduled_count: number; total_count: number }>("/documents/reingest_all", {
+      const response = await request<{ scheduled_count: number; total_count: number }>("/documents/reingest_all", {
         method: "POST",
         token
       });
       await loadWorkspace(token, user);
-      setMessage(`Переиндексация запланирована: ${response.scheduled_count}/${response.total_count}.`);
+      setMessage(messages.feedback.allDocumentsReingest(response.scheduled_count, response.total_count));
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(errorMessage(requestError, messages.feedback.unexpectedError));
     } finally {
       setIsBusy(false);
     }
@@ -771,16 +816,16 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setMessage("");
     setError("");
     try {
-      const created = await apiRequest<Chat>("/chats", { method: "POST", token, body: { title: "" } });
+      const created = await request<Chat>("/chats", { method: "POST", token, body: { title: "" } });
       setChats((current) => [created, ...current]);
       setActiveChatID(created.id);
-      setMessages([]);
+      setChatMessages([]);
       setView("chat");
       setIsNavOpen(false);
-      setMessage("Новый чат создан.");
+      setMessage(messages.feedback.newChatCreated);
       queueMicrotask(() => composerRef.current?.focus());
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(errorMessage(requestError, messages.feedback.unexpectedError));
     } finally {
       setIsBusy(false);
     }
@@ -804,7 +849,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       setView("chat");
       setIsNavOpen(false);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(errorMessage(requestError, messages.feedback.unexpectedError));
     } finally {
       setIsBusy(false);
     }
@@ -842,7 +887,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setStreamPhase("retrieving");
     setStreamStartedAt(Date.now());
     setStreamElapsedSeconds(0);
-    setMessages((current) => [...current, optimisticUserMessage]);
+    setChatMessages((current) => [...current, optimisticUserMessage]);
     let persistedUserMessageID = "";
     const localAssistantErrorID = `${optimisticMessageID}-error`;
     chatStreamAbortRef.current?.abort();
@@ -861,14 +906,14 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       payload.top_k = activeResponseProfile.topK;
       payload.candidate_k = activeResponseProfile.candidateK;
 
-      const response = await streamChatMessage(activeChatID, payload, token, {
+      const response = await requestStream(activeChatID, payload, token, {
         signal: streamController.signal,
         onPhase(nextPhase) {
           setStreamPhase(nextPhase);
         },
         onUserMessage(nextMessage) {
           persistedUserMessageID = nextMessage.id;
-          setMessages((current) => {
+          setChatMessages((current) => {
             let didReplaceOptimistic = false;
             const replaced = current.map((entry) => {
               if (entry.id === optimisticMessageID) {
@@ -889,7 +934,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
         }
       });
 
-      setMessages((current) => {
+      setChatMessages((current) => {
         const replacedOptimistic = current.map((entry) =>
           entry.id === optimisticMessageID ? response.user_message : entry
         );
@@ -920,9 +965,8 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       const failedMessageID = typeof persistedUserMessageID === "string" && persistedUserMessageID !== ""
         ? persistedUserMessageID
         : optimisticMessageID;
-      const reason = errorMessage(requestError);
-      const shortReason = "Не удалось получить ответ.";
-      setMessages((current) => {
+      const shortReason = messages.feedback.responseMissing;
+      setChatMessages((current) => {
         const localAssistantErrorID = `${optimisticMessageID}-error`;
         const nextMessages = current.map((entry) =>
           entry.id === failedMessageID
@@ -967,7 +1011,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       return;
     }
 
-    if (!window.confirm("Удалить текущий чат? Это действие нельзя отменить.")) {
+    if (!window.confirm(messages.feedback.deleteChatConfirm)) {
       return;
     }
 
@@ -975,29 +1019,29 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setMessage("");
     setError("");
     try {
-      await apiRequest(`/chats/${activeChatID}`, {
+      await request(`/chats/${activeChatID}`, {
         method: "DELETE",
         token
       });
 
       const list = await refreshChats(token);
       if (list.length === 0) {
-        const created = await apiRequest<Chat>("/chats", {
+        const created = await request<Chat>("/chats", {
           method: "POST",
           token,
           body: { title: "" }
         });
         setChats([created]);
         setActiveChatID(created.id);
-        setMessages([]);
+        setChatMessages([]);
       } else {
         const nextChatID = list[0].id;
         setActiveChatID(nextChatID);
         await loadChatMessages(token, nextChatID);
       }
-      setMessage("Чат удалён.");
+      setMessage(messages.feedback.chatDeleted);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(errorMessage(requestError, messages.feedback.unexpectedError));
     } finally {
       setIsBusy(false);
     }
@@ -1011,15 +1055,15 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setMessage("");
     setError("");
     try {
-      const updated = await apiRequest<UserSettings>("/me/settings", {
+      const updated = await request<UserSettings>("/me/settings", {
         method: "PATCH",
         token,
         body: { default_mode: nextMode }
       });
       setSettings(updated);
-      setMessage("Режим по умолчанию обновлён.");
+      setMessage(messages.feedback.defaultModeUpdated);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(errorMessage(requestError, messages.feedback.unexpectedError));
     } finally {
       setIsBusy(false);
     }
@@ -1052,7 +1096,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
     const cleanName = roleDraftName.trim();
     if (cleanName === "") {
-      setError("Название роли обязательно.");
+      setError(messages.feedback.roleNameRequired);
       return;
     }
 
@@ -1061,7 +1105,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setError("");
     try {
       if (editingRoleID) {
-        await apiRequest(`/admin/roles/${editingRoleID}`, {
+        await request(`/admin/roles/${editingRoleID}`, {
           method: "PATCH",
           token,
           body: {
@@ -1069,9 +1113,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
             permissions: roleDraftPermissions
           }
         });
-        setMessage("Роль обновлена.");
+        setMessage(messages.feedback.roleUpdated);
       } else {
-        await apiRequest("/admin/roles", {
+        await request("/admin/roles", {
           method: "POST",
           token,
           body: {
@@ -1079,13 +1123,13 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
             permissions: roleDraftPermissions
           }
         });
-        setMessage("Роль создана.");
+        setMessage(messages.feedback.roleCreated);
       }
 
       resetRoleDraft();
       await loadWorkspace(token, user);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(errorMessage(requestError, messages.feedback.unexpectedError));
     } finally {
       setIsBusy(false);
     }
@@ -1096,11 +1140,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       return;
     }
     if (role.is_default) {
-      setError("Системные роли нельзя удалить.");
+      setError(messages.feedback.systemRoleDelete);
       return;
     }
 
-    if (!window.confirm(`Удалить роль «${role.name}»?`)) {
+    if (!window.confirm(messages.feedback.deleteRoleConfirm(role.name))) {
       return;
     }
 
@@ -1108,7 +1152,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setMessage("");
     setError("");
     try {
-      await apiRequest(`/admin/roles/${role.id}`, {
+      await request(`/admin/roles/${role.id}`, {
         method: "DELETE",
         token
       });
@@ -1116,9 +1160,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
         resetRoleDraft();
       }
       await loadWorkspace(token, user);
-      setMessage("Роль удалена.");
+      setMessage(messages.feedback.roleDeleted);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(errorMessage(requestError, messages.feedback.unexpectedError));
     } finally {
       setIsBusy(false);
     }
@@ -1163,11 +1207,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setMessage("");
     setError("");
     try {
-      await apiRequest("/auth/logout", { method: "POST" });
+      await request("/auth/logout", { method: "POST" });
       clearSession();
-      setMessage("Вы вышли из аккаунта.");
+      setMessage(messages.feedback.loggedOut);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(errorMessage(requestError, messages.feedback.unexpectedError));
     } finally {
       setIsBusy(false);
     }
@@ -1202,7 +1246,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
     setChats([]);
     setActiveChatID("");
-    setMessages([]);
+    setChatMessages([]);
     setAssistantResponseDurations({});
     setDraftMessage("");
     resetStreamingAssistant();
@@ -1234,10 +1278,13 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
         {!user && (
           <div className="headerRow">
-            <div>
-              <h1>Вход</h1>
+            <div className="headerRowTop">
+              <div>
+                <h1>{messages.auth.loginTitle}</h1>
+              </div>
+              <LocaleSwitcher />
             </div>
-            <p className="hint">Консоль владельца и администратора</p>
+            <p className="hint">{messages.auth.ownerConsole}</p>
           </div>
         )}
 
@@ -1249,32 +1296,32 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                 className={`tabButton ${mode === "login" ? "active" : ""}`}
                 onClick={() => setMode("login")}
               >
-                Войти
+                {messages.auth.loginTab}
               </button>
               <button
                 type="button"
                 className={`tabButton ${mode === "register" ? "active" : ""}`}
                 onClick={() => setMode("register")}
               >
-                Регистрация владельца
+                {messages.auth.registerTab}
               </button>
             </div>
 
             <form className="formGrid" onSubmit={onSubmitAuth}>
               {mode === "register" && (
                 <label>
-                  Организация
+                  {messages.auth.organization}
                   <input
                     value={organizationName}
                     onChange={(event) => setOrganizationName(event.target.value)}
-                    placeholder="ООО Пример"
+                    placeholder={messages.auth.organizationPlaceholder}
                     required
                   />
                 </label>
               )}
 
               <label>
-                Почта
+                {messages.auth.email}
                 <input
                   type="email"
                   value={email}
@@ -1285,7 +1332,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               </label>
 
               <label>
-                Пароль
+                {messages.auth.password}
                 <input
                   type="password"
                   value={password}
@@ -1296,7 +1343,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               </label>
 
               <button type="submit" className="btn btnPrimary" disabled={isBusy}>
-                {isBusy ? "Обработка..." : mode === "register" ? "Создать организацию" : "Войти"}
+                {isBusy
+                  ? messages.auth.submitBusy
+                  : mode === "register"
+                    ? messages.auth.submitRegister
+                    : messages.auth.submitLogin}
               </button>
             </form>
           </>
@@ -1308,15 +1359,22 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               <div className="sidebarTop">
                 <div className="sidebarBrand">
                   <div className="sidebarTitle">Vertex RAG</div>
-                  <div className="sidebarSub">Защищённое рабочее пространство</div>
+                  <div className="sidebarSub">{messages.shell.workspace}</div>
                 </div>
+                <LocaleSwitcher />
               </div>
 
               <div className="sidebarSection" data-tour="chat-nav">
                 <div className="sidebarSectionHeader">
-                  <div className="sidebarSectionTitle">Чаты</div>
+                  <div className="sidebarSectionTitle">{messages.shell.chats}</div>
                   <div className="iconBtnRow">
-                    <button type="button" className="iconCreateBtn" onClick={() => void onCreateChat()} aria-label="Создать чат" data-tour="chat-create">
+                    <button
+                      type="button"
+                      className="iconCreateBtn"
+                      onClick={() => void onCreateChat()}
+                      aria-label={messages.shell.createChat}
+                      data-tour="chat-create"
+                    >
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                     </button>
                   </div>
@@ -1333,7 +1391,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                       <span className="chatListTitle">{chat.title}</span>
                     </button>
                   ))}
-                  {chats.length === 0 && <div className="chatListEmpty">Пока нет чатов.</div>}
+                  {chats.length === 0 && <div className="chatListEmpty">{messages.shell.noChats}</div>}
                 </div>
               </div>
 
@@ -1341,7 +1399,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                 <button
                   type="button"
                   className="btn btnSecondary btnSmall sidebarSettingsBtn"
-                  aria-label="Открыть настройки"
+                  aria-label={messages.shell.openSettings}
                   data-tour="settings-btn"
                   onClick={() => {
                     setSettingsTab("account");
@@ -1349,7 +1407,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                   }}
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15A1.65 1.65 0 0 0 20 13.6a1.65 1.65 0 0 0-.6-1.2l-1.1-.9a1.65 1.65 0 0 1-.5-1.8l.5-1.3a1.65 1.65 0 0 0-.3-1.8 1.65 1.65 0 0 0-1.7-.5l-1.4.4a1.65 1.65 0 0 1-1.7-.5l-.9-1.1A1.65 1.65 0 0 0 12.4 4a1.65 1.65 0 0 0-1.2.6l-.9 1.1a1.65 1.65 0 0 1-1.8.5l-1.3-.5a1.65 1.65 0 0 0-1.8.3 1.65 1.65 0 0 0-.5 1.7l.4 1.4a1.65 1.65 0 0 1-.5 1.7L4 11.6a1.65 1.65 0 0 0-.6 1.2A1.65 1.65 0 0 0 4 14.2l1.1.9a1.65 1.65 0 0 1 .5 1.8l-.5 1.3a1.65 1.65 0 0 0 .3 1.8 1.65 1.65 0 0 0 1.7.5l1.4-.4a1.65 1.65 0 0 1 1.7.5l.9 1.1a1.65 1.65 0 0 0 1.2.6 1.65 1.65 0 0 0 1.2-.6l.9-1.1a1.65 1.65 0 0 1 1.8-.5l1.3.5a1.65 1.65 0 0 0 1.8-.3 1.65 1.65 0 0 0 .5-1.7l-.4-1.4a1.65 1.65 0 0 1 .5-1.7z"></path></svg>
-                  <span>Настройки</span>
+                  <span>{messages.shell.settings}</span>
                 </button>
               </div>
             </aside>
@@ -1360,15 +1418,16 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                   type="button"
                   className="btn btnSecondary btnSmall navToggle"
                   onClick={() => setIsNavOpen((current) => !current)}
+                  aria-label={messages.shell.toggleNavigation}
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
                 </button>
 
                 <div className="mainHeaderTitle">
-                  {view === "chat" && <span>{activeChat?.title || "Новый чат"}</span>}
-                  {view === "knowledge" && <span>База знаний</span>}
-                  {view === "users" && <span>Пользователи</span>}
-                  {view === "account" && <span>Аккаунт</span>}
+                  {view === "chat" && <span>{activeChat?.title || messages.shell.newChat}</span>}
+                  {view === "knowledge" && <span>{messages.shell.knowledge}</span>}
+                  {view === "users" && <span>{messages.shell.users}</span>}
+                  {view === "account" && <span>{messages.shell.account}</span>}
                 </div>
                 <div className="mainHeaderRight">
                   {view === "chat" && activeChatID && (
@@ -1378,7 +1437,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                       onClick={() => void onDeleteChat()}
                       disabled={isBusy || isStreamingMessage}
                     >
-                      Удалить чат
+                      {messages.shell.deleteChat}
                     </button>
                   )}
                 </div>
@@ -1387,43 +1446,38 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               {view === "chat" && (
                 <div className="chatPane">
                   <div className="chatScroll" ref={scrollRef}>
-                    {messages.length === 0 && (
+                    {chatMessages.length === 0 && (
                       <div className="chatEmpty">
-                        <div className="chatEmptyTitle">Задайте вопрос</div>
-                        <div className="chatEmptyBody">
-                          Ассистент отвечает, используя базу знаний вашей организации.
-                        </div>
+                        <div className="chatEmptyTitle">{messages.chat.emptyTitle}</div>
+                        <div className="chatEmptyBody">{messages.chat.emptyBody}</div>
                       </div>
                     )}
 
-                    {messages.map((entry) => (
+                    {chatMessages.map((entry) => (
                       <div
                         key={entry.id}
                         className={`chatMessageRow ${entry.role === "user" ? "fromUser" : "fromAssistant"} ${entry.client_status === "failed" ? "isFailed" : ""}`}
                       >
                         <div className="chatBubble">
                           <div className="chatBubbleMeta">
-                            <span className="chatRole">{entry.role === "user" ? "Вы" : "Ассистент"}</span>
+                            <span className="chatRole">{entry.role === "user" ? messages.chat.you : messages.chat.assistant}</span>
                             {entry.role === "assistant" && assistantResponseDurations[entry.id] !== undefined && (
                               <span className="chatMetaTime">{formatElapsed(assistantResponseDurations[entry.id])}</span>
                             )}
                           </div>
                           <div className="chatBubbleContent">{entry.content}</div>
                           {entry.role === "user" && entry.client_status === "failed" && (
-                            <div className="chatBubbleHint">Сообщение не доставлено. Исправьте причину ошибки и отправьте заново.</div>
+                            <div className="chatBubbleHint">{messages.chat.failedDelivery}</div>
                           )}
                           {entry.role === "assistant" &&
                             entry.mode === "strict" &&
-                            entry.content.trim() === "Недостаточно данных в базе знаний." &&
+                            noKnowledgeMessages.includes(entry.content.trim()) &&
                             (entry.citations?.length || 0) === 0 && (
-                              <div className="chatBubbleHint">
-                                Нет релевантных источников в базе знаний для этой роли. Проверьте доступ к документу (allowed roles) или загрузите
-                                документ с нужными правами.
-                              </div>
+                              <div className="chatBubbleHint">{messages.chat.noKnowledgeHint}</div>
                             )}
                           {entry.role === "assistant" && entry.citations?.length > 0 && (
                             <details className="details">
-                              <summary className="detailsSummary">Источники</summary>
+                              <summary className="detailsSummary">{messages.chat.sources}</summary>
                               <div className="detailsBody">
                                 <div className="sources">
                                   {entry.citations.map((citation, index) => (
@@ -1452,7 +1506,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                       <div className="chatMessageRow fromAssistant">
                         <div className="chatBubble">
                           <div className="chatBubbleMeta">
-                            <span className="chatRole">Ассистент</span>
+                            <span className="chatRole">{messages.chat.assistant}</span>
                             <span className="chatMetaTime">{formatElapsed(streamElapsedSeconds)}</span>
                           </div>
                           <div className="chatBubbleContent">
@@ -1479,7 +1533,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                           event.currentTarget.style.height = "auto";
                           event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`;
                         }}
-                        placeholder="Напишите сообщение…"
+                        placeholder={messages.chat.composerPlaceholder}
                         rows={1}
                         className="composerInput"
                         onKeyDown={(event) => {
@@ -1490,20 +1544,20 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                         }}
                       />
                       <div className="composerBottomRow">
-                        <div className="composerTabs" aria-label="Параметры сообщения">
+                        <div className="composerTabs" aria-label={messages.chat.composerOptions}>
                           <button
                             type="button"
                             className="iconCreateBtn composerActionBtn"
                             onClick={() => setIsUploadModalOpen(true)}
-                            aria-label="Загрузить файл"
+                            aria-label={messages.chat.uploadFile}
                             data-tour="upload-btn"
                           >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                           </button>
-                          <div className="composerSelectGroup" aria-label="Режим ответа" data-tour="mode-toggle">
+                          <div className="composerSelectGroup" aria-label={messages.chat.responseMode} data-tour="mode-toggle">
                             <ComposerDropdownMenu
                               isOpen={openComposerDropdown === "mode"}
-                              label={modeOptions.find((option) => option.value === messageMode)?.label || "Строгий"}
+                              label={modeOptions.find((option) => option.value === messageMode)?.label || messages.chat.modeStrict}
                               onToggle={() => setOpenComposerDropdown((current) => current === "mode" ? null : "mode")}
                               options={modeOptions.map((option) => ({
                                 value: option.value,
@@ -1514,9 +1568,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                                 setOpenComposerDropdown(null);
                               }}
                             />
-                            {!canAccessUnstrict && <span className="modeToggleHint">Роль не разрешает unstrict</span>}
+                            {!canAccessUnstrict && <span className="modeToggleHint">{messages.chat.unstrictDisabled}</span>}
                           </div>
-                          <div className="composerSelectGroup" aria-label="Профиль ответа">
+                          <div className="composerSelectGroup" aria-label={messages.chat.responseProfile}>
                             <ComposerDropdownMenu
                               isOpen={openComposerDropdown === "profile"}
                               label={activeResponseProfile.label}
@@ -1549,24 +1603,24 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               {view === "knowledge" && (
                 <div className="panel">
                   {!canUploadDocs && (
-                    <p className="notice">Вы можете просматривать документы, но у вас нет прав на загрузку.</p>
+                    <p className="notice">{messages.knowledge.readOnlyNotice}</p>
                   )}
 
                   {canUploadDocs && (
                     <div className="panelSection">
-                      <h2>Загрузка</h2>
+                      <h2>{messages.knowledge.upload}</h2>
                       <form className="formGrid" onSubmit={onUploadDocument}>
                         <label>
-                          Название (необязательно)
+                          {messages.knowledge.titleOptional}
                           <input
                             value={documentTitle}
                             onChange={(event) => setDocumentTitle(event.target.value)}
-                            placeholder="Регламент компании"
+                            placeholder={messages.knowledge.titlePlaceholder}
                           />
                         </label>
 
                         <label>
-                          Файл
+                          {messages.knowledge.file}
                           <input
                             type="file"
                             onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
@@ -1575,7 +1629,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                         </label>
 
                         <fieldset>
-                          <legend>Разрешённые роли</legend>
+                          <legend>{messages.knowledge.allowedRoles}</legend>
                           <div className="rolesGrid">
                             {roles.map((role) => (
                               <label key={role.id} className="roleCheck">
@@ -1591,18 +1645,18 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                         </fieldset>
 
                         <button type="submit" className="btn btnPrimary" disabled={isBusy}>
-                          {isBusy ? "Загрузка..." : "Загрузить документ"}
+                          {isBusy ? messages.knowledge.uploadBusy : messages.knowledge.uploadSubmit}
                         </button>
                       </form>
                     </div>
                   )}
 
                   <div className="panelSection">
-                    <h2>Документы</h2>
+                    <h2>{messages.knowledge.documents}</h2>
                     {canUploadDocs && (
                       <div className="panelRow">
                         <button type="button" className="btn btnSmall" onClick={() => void onReingestAllDocuments()} disabled={isBusy}>
-                          Переиндексировать все
+                          {messages.knowledge.reingestAll}
                         </button>
                       </div>
                     )}
@@ -1610,11 +1664,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                       <table>
                         <thead>
                           <tr>
-                            <th>Название</th>
-                            <th>Файл</th>
-                            <th>Статус</th>
-                            <th>Роли доступа</th>
-                            {canUploadDocs && <th>Действия</th>}
+                            <th>{messages.knowledge.name}</th>
+                            <th>{messages.knowledge.filename}</th>
+                            <th>{messages.knowledge.status}</th>
+                            <th>{messages.knowledge.accessRoles}</th>
+                            {canUploadDocs && <th>{messages.knowledge.actions}</th>}
                           </tr>
                         </thead>
                         <tbody>
@@ -1622,7 +1676,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                             <tr key={entry.id}>
                               <td>{entry.title}</td>
                               <td>{entry.filename}</td>
-                              <td>{entry.status}</td>
+                              <td>{getTranslatedStatus(entry.status)}</td>
                               <td>{entry.allowed_role_ids.join(", ")}</td>
                               {canUploadDocs && (
                                 <td>
@@ -1632,7 +1686,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                                     onClick={() => void onReingestDocument(entry.id)}
                                     disabled={isBusy}
                                   >
-                                    Переиндексировать
+                                    {messages.knowledge.reingest}
                                   </button>
                                 </td>
                               )}
@@ -1640,7 +1694,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                           ))}
                           {documents.length === 0 && (
                             <tr>
-                              <td colSpan={canUploadDocs ? 5 : 4}>Документов пока нет.</td>
+                              <td colSpan={canUploadDocs ? 5 : 4}>{messages.knowledge.noDocuments}</td>
                             </tr>
                           )}
                         </tbody>
@@ -1652,19 +1706,19 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
               {view === "users" && (
                 <div className="panel">
-                  {!canManageUsers && <p className="notice">У текущего пользователя нет прав на управление пользователями.</p>}
+                  {!canManageUsers && <p className="notice">{messages.users.noAccess}</p>}
 
                   {canManageUsers && (
                     <div className="panelSection">
-                      <h2>Пользователи и роли</h2>
+                      <h2>{messages.users.title}</h2>
                       <div className="tableWrap">
                         <table>
                           <thead>
                             <tr>
-                              <th>Почта</th>
-                              <th>Роль</th>
-                              <th>Статус</th>
-                              <th>Назначить</th>
+                              <th>{messages.auth.email}</th>
+                              <th>{messages.roles.role}</th>
+                              <th>{messages.knowledge.status}</th>
+                              <th>{messages.users.save}</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1672,7 +1726,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                               <tr key={entry.id}>
                                 <td>{entry.email}</td>
                                 <td>{entry.role_name}</td>
-                                <td>{entry.status}</td>
+                                <td>{getTranslatedStatus(entry.status)}</td>
                                 <td>
                                   <div className="assignRow">
                                     <select
@@ -1696,7 +1750,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                                       onClick={() => void onChangeRole(entry.id)}
                                       disabled={isBusy}
                                     >
-                                      Сохранить
+                                      {messages.users.save}
                                     </button>
                                   </div>
                                 </td>
@@ -1704,7 +1758,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                             ))}
                             {users.length === 0 && (
                               <tr>
-                                <td colSpan={4}>Пользователи не найдены.</td>
+                                <td colSpan={4}>{messages.users.notFound}</td>
                               </tr>
                             )}
                           </tbody>
@@ -1713,25 +1767,23 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                     </div>
                   )}
 
-                  {!canManageRoles && (
-                    <p className="notice">У текущего пользователя нет прав на управление ролями.</p>
-                  )}
+                  {!canManageRoles && <p className="notice">{messages.roles.noAccess}</p>}
                   {canManageRoles && (
                     <div className="panelSection">
-                      <h2>Роли и разрешения</h2>
+                      <h2>{messages.roles.title}</h2>
                       <div className="formGrid">
                         <label>
-                          Название роли
+                          {messages.roles.roleName}
                           <input
                             type="text"
                             value={roleDraftName}
                             onChange={(event) => setRoleDraftName(event.target.value)}
-                            placeholder="Например: Analyst"
+                            placeholder={messages.roles.rolePlaceholder}
                             disabled={isBusy}
                           />
                         </label>
                         <div>
-                          <p className="hint">Разрешения</p>
+                          <p className="hint">{messages.roles.permissions}</p>
                           <div className="rolesGrid">
                             {rolePermissionOptions.map((permission) => (
                               <label key={permission.key} className="roleCheck">
@@ -1748,11 +1800,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                         </div>
                         <div className="assignRow">
                           <button type="button" className="btn btnSmall" onClick={() => void onSaveRole()} disabled={isBusy}>
-                            {editingRoleID ? "Обновить роль" : "Создать роль"}
+                            {editingRoleID ? messages.roles.update : messages.roles.create}
                           </button>
                           {editingRoleID && (
                             <button type="button" className="btn btnGhost btnSmall" onClick={resetRoleDraft} disabled={isBusy}>
-                              Отмена
+                              {messages.roles.cancel}
                             </button>
                           )}
                         </div>
@@ -1761,9 +1813,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                         <table>
                           <thead>
                             <tr>
-                              <th>Роль</th>
-                              <th>Разрешения</th>
-                              <th>Действия</th>
+                              <th>{messages.roles.role}</th>
+                              <th>{messages.roles.permissions}</th>
+                              <th>{messages.knowledge.actions}</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1771,16 +1823,16 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                               <tr key={role.id}>
                                 <td>
                                   {role.name}
-                                  {role.is_default && " (default)"}
+                                  {role.is_default && ` (${messages.roles.defaultSuffix})`}
                                 </td>
-                                <td>{role.permissions.join(", ") || "—"}</td>
+                                <td>{formatPermissionList(role.permissions)}</td>
                                 <td>
                                   <div className="assignRow">
                                     <button type="button" className="btn btnSmall" onClick={() => onStartEditRole(role)} disabled={isBusy || role.is_default}>
-                                      Редактировать
+                                      {messages.roles.edit}
                                     </button>
                                     <button type="button" className="btn btnGhost btnSmall" onClick={() => void onDeleteRole(role)} disabled={isBusy || role.is_default}>
-                                      Удалить
+                                      {messages.roles.delete}
                                     </button>
                                   </div>
                                 </td>
@@ -1788,7 +1840,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                             ))}
                             {roles.length === 0 && (
                               <tr>
-                                <td colSpan={3}>Роли не найдены.</td>
+                                <td colSpan={3}>{messages.roles.notFound}</td>
                               </tr>
                             )}
                           </tbody>
@@ -1802,20 +1854,20 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               {view === "account" && (
                 <div className="panel">
                   <div className="panelSection">
-                    <h2>Аккаунт</h2>
+                    <h2>{messages.account.title}</h2>
                     <div className="accountGrid">
                       <p>
-                        <strong>Пользователь</strong>
+                        <strong>{messages.account.user}</strong>
                         <br />
                         {user.email}
                       </p>
                       <p>
-                        <strong>Роль</strong>
+                        <strong>{messages.account.role}</strong>
                         <br />
                         {user.role_name}
                       </p>
                       <p>
-                        <strong>Организация</strong>
+                        <strong>{messages.account.organization}</strong>
                         <br />
                         {user.org_id}
                       </p>
@@ -1823,17 +1875,17 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                   </div>
 
                   <div className="panelSection">
-                    <h2>Режим по умолчанию</h2>
-                    <p className="hint">Определяет режим, если вы не указываете его в сообщении.</p>
+                    <h2>{messages.account.defaultMode}</h2>
+                    <p className="hint">{messages.account.defaultModeHint}</p>
                     <div className="settingsRow">
-                      <div className="modeToggle" role="tablist" aria-label="Режим по умолчанию">
+                      <div className="modeToggle" role="tablist" aria-label={messages.account.defaultMode}>
                         <button
                           type="button"
                           className={`modeToggleItem ${(settings?.default_mode || "strict") === "strict" ? "active" : ""}`}
                           onClick={() => void onUpdateDefaultMode("strict")}
                           disabled={isBusy}
                         >
-                          Строгий
+                          {messages.chat.modeStrict}
                         </button>
                         {canAccessUnstrict ? (
                           <button
@@ -1842,10 +1894,10 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                             onClick={() => void onUpdateDefaultMode("unstrict")}
                             disabled={isBusy}
                           >
-                            Нестрогий
+                            {messages.chat.modeUnstrict}
                           </button>
                         ) : (
-                          <span className="modeToggleHint">Роль не разрешает unstrict</span>
+                          <span className="modeToggleHint">{messages.chat.unstrictDisabled}</span>
                         )}
                       </div>
                     </div>
@@ -1865,12 +1917,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               className={`settingsModal settingsModalWide ${isSettingsOpen ? "modalCardVisible" : "modalCardHidden"}`}
               role="dialog"
               aria-modal="true"
-              aria-label="Настройки"
+              aria-label={messages.settings.title}
               onClick={(event) => event.stopPropagation()}
             >
               <div className="settingsModalBar">
-                <div className="settingsModalTitle">Настройки</div>
-                <button type="button" className="iconCreateBtn" onClick={() => setIsSettingsOpen(false)} aria-label="Закрыть настройки">
+                <div className="settingsModalTitle">{messages.settings.title}</div>
+                <button type="button" className="iconCreateBtn" onClick={() => setIsSettingsOpen(false)} aria-label={messages.settings.close}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
               </div>
@@ -1882,7 +1934,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                     className={`settingsModalBtn ${settingsTab === "knowledge" ? "active" : ""}`}
                     onClick={() => setSettingsTab("knowledge")}
                   >
-                    База знаний
+                    {messages.settings.knowledge}
                   </button>
                   <button
                     type="button"
@@ -1890,7 +1942,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                     disabled={!canManageUsers}
                     onClick={() => setSettingsTab("users")}
                   >
-                    Пользователи
+                    {messages.settings.users}
                   </button>
                   <button
                     type="button"
@@ -1898,14 +1950,14 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                     disabled={!canManageRoles}
                     onClick={() => setSettingsTab("roles")}
                   >
-                    Роли
+                    {messages.settings.roles}
                   </button>
                   <button
                     type="button"
                     className={`settingsModalBtn ${settingsTab === "account" ? "active" : ""}`}
                     onClick={() => setSettingsTab("account")}
                   >
-                    Аккаунт
+                    {messages.settings.account}
                   </button>
                   <button
                     type="button"
@@ -1913,7 +1965,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                     onClick={() => void onLogout()}
                     disabled={isBusy}
                   >
-                    Выйти
+                    {messages.settings.logout}
                   </button>
                 </div>
                 <div className="settingsModalPane">
@@ -1928,7 +1980,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                               onClick={() => void onReingestAllDocuments()}
                               disabled={isBusy}
                             >
-                              Переиндексировать все
+                              {messages.knowledge.reingestAll}
                             </button>
                           </div>
                         )}
@@ -1936,11 +1988,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                           <table>
                             <thead>
                               <tr>
-                                <th>Название</th>
-                                <th>Файл</th>
-                                <th>Статус</th>
-                                <th>Роли доступа</th>
-                                {canUploadDocs && <th>Действия</th>}
+                                <th>{messages.knowledge.name}</th>
+                                <th>{messages.knowledge.filename}</th>
+                                <th>{messages.knowledge.status}</th>
+                                <th>{messages.knowledge.accessRoles}</th>
+                                {canUploadDocs && <th>{messages.knowledge.actions}</th>}
                               </tr>
                             </thead>
                             <tbody>
@@ -1948,7 +2000,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                                 <tr key={entry.id}>
                                   <td>{entry.title}</td>
                                   <td>{entry.filename}</td>
-                                  <td>{entry.status}</td>
+                                  <td>{getTranslatedStatus(entry.status)}</td>
                                   <td>{entry.allowed_role_ids.join(", ")}</td>
                                   {canUploadDocs && (
                                     <td>
@@ -1958,7 +2010,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                                         onClick={() => void onReingestDocument(entry.id)}
                                         disabled={isBusy}
                                       >
-                                        Переиндексировать
+                                        {messages.knowledge.reingest}
                                       </button>
                                     </td>
                                   )}
@@ -1966,7 +2018,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                               ))}
                               {documents.length === 0 && (
                                 <tr>
-                                  <td colSpan={canUploadDocs ? 5 : 4}>Документов пока нет.</td>
+                                  <td colSpan={canUploadDocs ? 5 : 4}>{messages.knowledge.noDocuments}</td>
                                 </tr>
                               )}
                             </tbody>
@@ -1980,10 +2032,10 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                           <table>
                             <thead>
                               <tr>
-                                <th>Почта</th>
-                                <th>Роль</th>
-                                <th>Статус</th>
-                                <th>Назначить</th>
+                                <th>{messages.auth.email}</th>
+                                <th>{messages.roles.role}</th>
+                                <th>{messages.knowledge.status}</th>
+                                <th>{messages.users.save}</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -1991,7 +2043,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                                 <tr key={entry.id}>
                                   <td>{entry.email}</td>
                                   <td>{entry.role_name}</td>
-                                  <td>{entry.status}</td>
+                                  <td>{getTranslatedStatus(entry.status)}</td>
                                   <td>
                                     <div className="assignRow">
                                       <select
@@ -2015,7 +2067,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                                         onClick={() => void onChangeRole(entry.id)}
                                         disabled={isBusy}
                                       >
-                                        Сохранить
+                                        {messages.users.save}
                                       </button>
                                     </div>
                                   </td>
@@ -2023,31 +2075,31 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                               ))}
                               {users.length === 0 && (
                                 <tr>
-                                  <td colSpan={4}>Пользователи не найдены.</td>
+                                  <td colSpan={4}>{messages.users.notFound}</td>
                                 </tr>
                               )}
                             </tbody>
                           </table>
                         </div>
                       ) : (
-                        <p className="notice">У текущего пользователя нет прав на управление пользователями.</p>
+                        <p className="notice">{messages.users.noAccess}</p>
                       ))}
                     {settingsTab === "roles" &&
                       (canManageRoles ? (
                         <>
                           <div className="formGrid">
                             <label>
-                              Название роли
+                              {messages.roles.roleName}
                               <input
                                 type="text"
                                 value={roleDraftName}
                                 onChange={(event) => setRoleDraftName(event.target.value)}
-                                placeholder="Например: Analyst"
+                                placeholder={messages.roles.rolePlaceholder}
                                 disabled={isBusy}
                               />
                             </label>
                             <div>
-                              <p className="hint">Разрешения</p>
+                              <p className="hint">{messages.roles.permissions}</p>
                               <div className="rolesGrid">
                                 {rolePermissionOptions.map((permission) => (
                                   <label key={permission.key} className="roleCheck">
@@ -2064,11 +2116,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                             </div>
                             <div className="assignRow">
                               <button type="button" className="btn btnSmall" onClick={() => void onSaveRole()} disabled={isBusy}>
-                                {editingRoleID ? "Обновить роль" : "Создать роль"}
+                                {editingRoleID ? messages.roles.update : messages.roles.create}
                               </button>
                               {editingRoleID && (
                                 <button type="button" className="btn btnGhost btnSmall" onClick={resetRoleDraft} disabled={isBusy}>
-                                  Отмена
+                                  {messages.roles.cancel}
                                 </button>
                               )}
                             </div>
@@ -2078,9 +2130,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                             <table>
                               <thead>
                                 <tr>
-                                  <th>Роль</th>
-                                  <th>Разрешения</th>
-                                  <th>Действия</th>
+                                  <th>{messages.roles.role}</th>
+                                  <th>{messages.roles.permissions}</th>
+                                  <th>{messages.knowledge.actions}</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -2088,9 +2140,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                                   <tr key={role.id}>
                                     <td>
                                       {role.name}
-                                      {role.is_default && " (default)"}
+                                      {role.is_default && ` (${messages.roles.defaultSuffix})`}
                                     </td>
-                                    <td>{role.permissions.join(", ") || "—"}</td>
+                                    <td>{formatPermissionList(role.permissions)}</td>
                                     <td>
                                       <div className="assignRow">
                                         <button
@@ -2099,7 +2151,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                                           onClick={() => onStartEditRole(role)}
                                           disabled={isBusy || role.is_default}
                                         >
-                                          Редактировать
+                                          {messages.roles.edit}
                                         </button>
                                         <button
                                           type="button"
@@ -2107,7 +2159,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                                           onClick={() => void onDeleteRole(role)}
                                           disabled={isBusy || role.is_default}
                                         >
-                                          Удалить
+                                          {messages.roles.delete}
                                         </button>
                                       </div>
                                     </td>
@@ -2115,7 +2167,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                                 ))}
                                 {roles.length === 0 && (
                                   <tr>
-                                    <td colSpan={3}>Роли не найдены.</td>
+                                    <td colSpan={3}>{messages.roles.notFound}</td>
                                   </tr>
                                 )}
                               </tbody>
@@ -2123,42 +2175,42 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                           </div>
                         </>
                       ) : (
-                        <p className="notice">У текущего пользователя нет прав на управление ролями.</p>
+                        <p className="notice">{messages.roles.noAccess}</p>
                       ))}
                     {settingsTab === "account" && (
                       <>
                         <div className="panelSection">
-                          <h2>Аккаунт</h2>
+                          <h2>{messages.account.title}</h2>
                           <div className="accountGrid">
                             <p>
-                              <strong>Пользователь</strong>
+                              <strong>{messages.account.user}</strong>
                               <br />
                               {user.email}
                             </p>
                             <p>
-                              <strong>Роль</strong>
+                              <strong>{messages.account.role}</strong>
                               <br />
                               {user.role_name}
                             </p>
                             <p>
-                              <strong>Организация</strong>
+                              <strong>{messages.account.organization}</strong>
                               <br />
                               {user.org_id}
                             </p>
                           </div>
                         </div>
                         <div className="panelSection">
-                          <h2>Режим по умолчанию</h2>
-                          <p className="hint">Определяет режим, если вы не указываете его в сообщении.</p>
+                          <h2>{messages.account.defaultMode}</h2>
+                          <p className="hint">{messages.account.defaultModeHint}</p>
                           <div className="settingsRow">
-                            <div className="modeToggle" role="tablist" aria-label="Режим по умолчанию">
+                            <div className="modeToggle" role="tablist" aria-label={messages.account.defaultMode}>
                               <button
                                 type="button"
                                 className={`modeToggleItem ${(settings?.default_mode || "strict") === "strict" ? "active" : ""}`}
                                 onClick={() => void onUpdateDefaultMode("strict")}
                                 disabled={isBusy}
                               >
-                                Строгий
+                                {messages.chat.modeStrict}
                               </button>
                               {canAccessUnstrict ? (
                                 <button
@@ -2167,10 +2219,10 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                                   onClick={() => void onUpdateDefaultMode("unstrict")}
                                   disabled={isBusy}
                                 >
-                                  Нестрогий
+                                  {messages.chat.modeUnstrict}
                                 </button>
                               ) : (
-                                <span className="modeToggleHint">Роль не разрешает unstrict</span>
+                                <span className="modeToggleHint">{messages.chat.unstrictDisabled}</span>
                               )}
                             </div>
                           </div>
@@ -2193,12 +2245,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               className={`settingsModal settingsModalUpload ${isUploadModalOpen ? "modalCardVisible" : "modalCardHidden"}`}
               role="dialog"
               aria-modal="true"
-              aria-label="Загрузка документа"
+              aria-label={messages.uploadModal.title}
               onClick={(event) => event.stopPropagation()}
             >
               <div className="settingsModalBar">
-                <div className="settingsModalTitle">Загрузка документа</div>
-                <button type="button" className="iconCreateBtn" onClick={() => setIsUploadModalOpen(false)} aria-label="Закрыть окно загрузки">
+                <div className="settingsModalTitle">{messages.uploadModal.title}</div>
+                <button type="button" className="iconCreateBtn" onClick={() => setIsUploadModalOpen(false)} aria-label={messages.uploadModal.close}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
               </div>
@@ -2208,15 +2260,15 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                     {error && <div className="uploadInlineFeedback uploadInlineFeedbackError">{error}</div>}
                     {message && <div className="uploadInlineFeedback uploadInlineFeedbackSuccess">{message}</div>}
                     <label className="uploadField">
-                      Название (необязательно)
+                      {messages.knowledge.titleOptional}
                       <input
                         value={documentTitle}
                         onChange={(event) => setDocumentTitle(event.target.value)}
-                        placeholder="Регламент компании"
+                        placeholder={messages.knowledge.titlePlaceholder}
                       />
                     </label>
                     <label className="uploadField">
-                      Файл
+                      {messages.knowledge.file}
                       <input
                         type="file"
                         onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
@@ -2224,7 +2276,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                       />
                     </label>
                     <fieldset className="uploadRolesFieldset">
-                      <legend>Разрешённые роли</legend>
+                      <legend>{messages.knowledge.allowedRoles}</legend>
                       <div className="rolesGrid uploadRolesGrid">
                         {roles.map((role) => (
                           <label key={role.id} className="roleCheck">
@@ -2239,12 +2291,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                       </div>
                     </fieldset>
                     <button type="submit" className="btn btnPrimary" disabled={!isUploadReady}>
-                      {isBusy ? "Загрузка..." : "Загрузить документ"}
+                      {isBusy ? messages.knowledge.uploadBusy : messages.knowledge.uploadSubmit}
                     </button>
                     {uploadHint && <p className="uploadHint">{uploadHint}</p>}
                   </form>
                 ) : (
-                  <p className="notice">У текущего пользователя нет прав на загрузку.</p>
+                  <p className="notice">{messages.uploadModal.noAccess}</p>
                 )}
               </div>
             </div>
@@ -2260,33 +2312,33 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               className={`settingsModal settingsModalUpload ${isCitationPreviewOpen ? "modalCardVisible" : "modalCardHidden"}`}
               role="dialog"
               aria-modal="true"
-              aria-label="Просмотр источника"
+              aria-label={messages.sourcePreview.open}
               onClick={(event) => event.stopPropagation()}
             >
               <div className="settingsModalBar">
-                <div className="settingsModalTitle">Источник ответа</div>
-                <button type="button" className="iconCreateBtn" onClick={closeCitationPreview} aria-label="Закрыть окно источника">
+                <div className="settingsModalTitle">{messages.sourcePreview.title}</div>
+                <button type="button" className="iconCreateBtn" onClick={closeCitationPreview} aria-label={messages.sourcePreview.close}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
               </div>
               <div className="settingsModalContent settingsModalContentUpload">
                 <div className="sourcePreviewGrid">
-                  <p><strong>Документ</strong><br />{activeCitation.doc_title}</p>
-                  <p><strong>Файл</strong><br />{activeCitation.doc_filename}</p>
+                  <p><strong>{messages.sourcePreview.document}</strong><br />{activeCitation.doc_title}</p>
+                  <p><strong>{messages.sourcePreview.file}</strong><br />{activeCitation.doc_filename}</p>
                   <p><strong>Chunk ID</strong><br />{activeCitation.chunk_id}</p>
                   <p><strong>Document ID</strong><br />{activeCitation.document_id}</p>
-                  <p><strong>Страница</strong><br />{activeCitation.page ?? "—"}</p>
-                  <p><strong>Секция</strong><br />{activeCitation.section || "—"}</p>
+                  <p><strong>{messages.sourcePreview.page}</strong><br />{activeCitation.page ?? "—"}</p>
+                  <p><strong>{messages.sourcePreview.section}</strong><br />{activeCitation.section || "—"}</p>
                 </div>
                 <div className="sourcePreviewSnippet">
-                  <strong>Фрагмент</strong>
-                  <p>{activeCitation.snippet || "Фрагмент не указан"}</p>
+                  <strong>{messages.sourcePreview.snippet}</strong>
+                  <p>{activeCitation.snippet || messages.sourcePreview.snippetMissing}</p>
                 </div>
                 <div className="sourcePreviewGrid">
-                  <p><strong>Скоринг</strong><br />total: {activeCitation.score?.toFixed(4) ?? "—"}</p>
+                  <p><strong>{messages.sourcePreview.scoring}</strong><br />total: {activeCitation.score?.toFixed(4) ?? "—"}</p>
                   <p><strong>Vector</strong><br />{activeCitation.vector_score?.toFixed(4) ?? "—"}</p>
                   <p><strong>Text</strong><br />{activeCitation.text_score?.toFixed(4) ?? "—"}</p>
-                  <p><strong>Статус документа</strong><br />{activeCitationDocument?.status || "unknown"}</p>
+                  <p><strong>{messages.sourcePreview.documentStatus}</strong><br />{activeCitationDocument ? getTranslatedStatus(activeCitationDocument.status) : messages.sourcePreview.unknown}</p>
                 </div>
                 <div className="settingsRow">
                   <button
@@ -2298,7 +2350,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                       setIsSettingsOpen(true);
                     }}
                   >
-                    Перейти к базе знаний
+                    {messages.sourcePreview.goToKnowledge}
                   </button>
                 </div>
               </div>
@@ -2307,7 +2359,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
         )}
 
         {user && isOnboardingOpen && currentOnboardingStep && (
-          <div className="onboardingOverlay" role="dialog" aria-modal="true" aria-label="Онбординг">
+          <div className="onboardingOverlay" role="dialog" aria-modal="true" aria-label={messages.onboarding.title}>
             {onboardingRect && (
               <div
                 className="onboardingHighlight"
@@ -2335,7 +2387,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               }
             >
               <div className="onboardingStep">
-                Шаг {onboardingStepIndex + 1} из {onboardingSteps.length}
+                {messages.onboarding.step(onboardingStepIndex + 1, onboardingSteps.length)}
               </div>
               <h3>{currentOnboardingStep.title}</h3>
               <p>{currentOnboardingStep.description}</p>
@@ -2346,14 +2398,14 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               </div>
               <div className="onboardingActions">
                 <button type="button" className="btn btnSecondary btnSmall" onClick={() => closeOnboarding(true)}>
-                  Пропустить
+                  {messages.onboarding.skip}
                 </button>
                 <div className="onboardingActionsRight">
                   <button type="button" className="btn btnSecondary btnSmall" onClick={onPrevOnboardingStep} disabled={onboardingStepIndex === 0}>
-                    Назад
+                    {messages.onboarding.previous}
                   </button>
                   <button type="button" className="btn btnPrimary btnSmall" onClick={onNextOnboardingStep}>
-                    {onboardingStepIndex === onboardingSteps.length - 1 ? "Готово" : "Далее"}
+                    {onboardingStepIndex === onboardingSteps.length - 1 ? messages.onboarding.done : messages.onboarding.next}
                   </button>
                 </div>
               </div>
@@ -2446,14 +2498,22 @@ async function apiRequest<T = unknown>(path: string, options: RequestOptions = {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const reason = typeof payload?.error === "string" ? payload.error : `Request failed: ${response.status}`;
+    const reason =
+      typeof payload?.error === "string"
+        ? payload.error
+        : options.requestFailureMessage?.(response.status) || `Request failed: ${response.status}`;
     throw new Error(reason);
   }
 
   return payload as T;
 }
 
-async function apiRequestMultipart<T = unknown>(path: string, formData: FormData, token: string): Promise<T> {
+async function apiRequestMultipart<T = unknown>(
+  path: string,
+  formData: FormData,
+  token: string,
+  requestFailureMessage?: (status: number) => string
+): Promise<T> {
   const response = await fetch(`${APIBaseURL}${path}`, {
     method: "POST",
     headers: {
@@ -2465,7 +2525,10 @@ async function apiRequestMultipart<T = unknown>(path: string, formData: FormData
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const reason = typeof payload?.error === "string" ? payload.error : `Request failed: ${response.status}`;
+    const reason =
+      typeof payload?.error === "string"
+        ? payload.error
+        : requestFailureMessage?.(response.status) || `Request failed: ${response.status}`;
     throw new Error(reason);
   }
 
@@ -2481,6 +2544,7 @@ async function streamChatMessage(
     onPhase: (phase: StreamPhase) => void;
     onUserMessage: (message: ChatMessage) => void;
     onAssistantDelta: (delta: string) => void;
+    requestFailureMessage?: (status: number) => string;
   }
 ): Promise<StreamDonePayload> {
   const response = await fetch(`${APIBaseURL}/chats/${chatID}/messages/stream`, {
@@ -2496,7 +2560,10 @@ async function streamChatMessage(
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    const reason = typeof payload?.error === "string" ? payload.error : `Request failed: ${response.status}`;
+    const reason =
+      typeof payload?.error === "string"
+        ? payload.error
+        : handlers.requestFailureMessage?.(response.status) || `Request failed: ${response.status}`;
     throw new Error(reason);
   }
 
@@ -2597,10 +2664,10 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
-function errorMessage(value: unknown): string {
+function errorMessage(value: unknown, fallback: string): string {
   if (value instanceof Error) {
     return value.message;
   }
 
-  return "Unexpected request error";
+  return fallback;
 }

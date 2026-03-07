@@ -1,0 +1,48 @@
+name: Feature request
+description: Propose an improvement to Vertex RAG
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What problem are you trying to solve?
+      placeholder: The current behavior makes it hard to ...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the change you want to see
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - retrieval
+        - ingestion
+        - role-based access
+        - web UI
+        - API
+        - worker
+        - deployment
+        - observability
+        - docs
+        - benchmarks / evals
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: success
+    attributes:
+      label: What success looks like
+      description: How would we know this is done well?
