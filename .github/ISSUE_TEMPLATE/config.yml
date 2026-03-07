@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security issue
+    url: https://github.com/Gekuyme/vertex-rag/security/advisories/new
+    about: Please report vulnerabilities privately instead of opening a public issue.
+  - name: Project documentation
+    url: https://github.com/Gekuyme/vertex-rag/blob/main/README.md
+    about: Check the setup, architecture, and testing docs before opening an issue.

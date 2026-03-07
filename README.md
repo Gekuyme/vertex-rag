@@ -270,5 +270,6 @@ This repository is intended to be a public, contributor-friendly project.
 - Contributing guide: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 - Security policy: [SECURITY.md](SECURITY.md)
+- Maintainer guide: [docs/maintaining-open-source.md](docs/maintaining-open-source.md)
 
 For OpenAI application positioning, see [docs/openai-codex-open-source-fund.md](docs/openai-codex-open-source-fund.md).
