@@ -1,10 +1,12 @@
 "use client";
 
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getMessages } from "../../lib/i18n/messages";
 import { useI18n } from "./I18nProvider";
 import LocaleSwitcher from "./LocaleSwitcher";
+import { useTheme } from "./ThemeProvider";
+import type { ThemePreference } from "../../lib/theme";
 
 const APIBaseURL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
 const accessTokenStorageKey = "vertex_access_token";
@@ -106,7 +108,9 @@ type StreamDonePayload = {
 
 type ResponseProfile = "fast" | "balanced" | "thinking";
 type StreamPhase = "retrieving" | "drafting" | "finalizing";
-type ComposerDropdown = "mode" | "profile" | null;
+type ChatModel = "qwen" | "gemini";
+type ComposerDropdown = "mode" | "profile" | "model" | null;
+type EmptyComposerMenu = "root" | "mode" | "profile" | null;
 
 type ConsoleAppProps = {
   initialView?: ConsoleView;
@@ -130,13 +134,23 @@ const onboardingStepTargets: OnboardingStep[] = [
   { selector: '[data-tour="mode-toggle"]' }
 ];
 
+const settingsTabIcons: Record<SettingsTab, ReactNode> = {
+  knowledge: <SettingsIconKnowledge />,
+  users: <SettingsIconUsers />,
+  roles: <SettingsIconRoles />,
+  account: <SettingsIconAccount />
+};
+
 export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const { messages } = useI18n();
+  const { themePreference, setThemePreference, resolvedTheme } = useTheme();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [view, setView] = useState<ConsoleView>(initialView);
+  const [isSessionBootstrapping, setIsSessionBootstrapping] = useState(true);
   const [isNavOpen, setIsNavOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [isRenameChatModalOpen, setIsRenameChatModalOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("account");
 
   const [token, setToken] = useState<string>("");
@@ -156,11 +170,16 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatID, setActiveChatID] = useState<string>("");
+  const [openChatActionsFor, setOpenChatActionsFor] = useState<string | null>(null);
+  const [chatRenameTarget, setChatRenameTarget] = useState<Chat | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [draftMessage, setDraftMessage] = useState("");
+  const [renameChatTitle, setRenameChatTitle] = useState("");
+  const [selectedModel, setSelectedModel] = useState<ChatModel>("qwen");
   const [messageMode, setMessageMode] = useState<"strict" | "unstrict">("strict");
   const [responseProfile, setResponseProfile] = useState<ResponseProfile>("balanced");
   const [openComposerDropdown, setOpenComposerDropdown] = useState<ComposerDropdown>(null);
+  const [openEmptyComposerMenu, setOpenEmptyComposerMenu] = useState<EmptyComposerMenu>(null);
   const [streamingAssistant, setStreamingAssistant] = useState("");
   const [streamPhase, setStreamPhase] = useState<StreamPhase | null>(null);
   const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null);
@@ -230,6 +249,15 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       })),
     [messages]
   );
+  const themeOptions: Array<{ value: ThemePreference; label: string }> = [
+    { value: "system", label: messages.settings.themeSystem },
+    { value: "light", label: messages.settings.themeLight },
+    { value: "dark", label: messages.settings.themeDark }
+  ];
+  const modelOptions: Array<{ value: ChatModel; label: string }> = [
+    { value: "qwen", label: messages.chat.modelQwen },
+    { value: "gemini", label: messages.chat.modelGemini }
+  ];
   const onboardingSteps = useMemo(
     () =>
       onboardingStepTargets.map((step, index) => ({
@@ -246,10 +274,47 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       : "";
   const isSettingsModalPresent = useModalPresence(isSettingsOpen, modalAnimationMs);
   const isUploadModalPresent = useModalPresence(isUploadModalOpen, modalAnimationMs);
+  const isRenameChatModalPresent = useModalPresence(isRenameChatModalOpen, modalAnimationMs);
   const isCitationPreviewPresent = useModalPresence(isCitationPreviewOpen, modalAnimationMs);
   const currentOnboardingStep = onboardingSteps[onboardingStepIndex] || null;
   const activeResponseProfile = responseProfiles.find((profile) => profile.id === responseProfile) || responseProfiles[1];
   const currentRequestFailureMessage = messages.feedback.requestFailed;
+  const defaultModeValue = settings?.default_mode || "strict";
+  const isChatPristine = view === "chat" && chatMessages.length === 0 && !isStreamingMessage;
+  const greetingName = useMemo(() => {
+    const localPart = user?.email?.split("@")[0]?.trim();
+    if (!localPart) {
+      return "there";
+    }
+    const cleaned = localPart
+      .replace(/[._-]+/g, " ")
+      .trim()
+      .split(/\s+/)[0];
+    if (!cleaned) {
+      return "there";
+    }
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+  }, [user?.email]);
+  const emptyGreeting = useMemo(() => {
+    const greetings = messages.chat.emptyGreetings;
+    return greetings[Math.floor(Math.random() * greetings.length)](greetingName);
+  }, [greetingName, messages]);
+  const settingsTabs: Array<{
+    key: SettingsTab;
+    label: string;
+    disabled?: boolean;
+  }> = [
+    { key: "knowledge", label: messages.settings.knowledge },
+    { key: "users", label: messages.settings.users, disabled: !canManageUsers },
+    { key: "roles", label: messages.settings.roles, disabled: !canManageRoles },
+    { key: "account", label: messages.settings.account }
+  ];
+  const settingsTitleByTab: Record<SettingsTab, string> = {
+    knowledge: messages.settings.knowledge,
+    users: messages.settings.users,
+    roles: messages.settings.roles,
+    account: messages.settings.account
+  };
 
   const request = <T,>(path: string, options: RequestOptions = {}) =>
     apiRequest<T>(path, {
@@ -279,11 +344,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   useEffect(() => {
     const storedToken = window.localStorage.getItem(accessTokenStorageKey);
     if (!storedToken) {
+      setIsSessionBootstrapping(false);
       return;
     }
 
     setToken(storedToken);
-    void hydrateSession(storedToken);
+    void hydrateSession(storedToken).finally(() => setIsSessionBootstrapping(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -315,6 +381,15 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   }, [canAccessUnstrict, settings?.default_mode, user]);
 
   useEffect(() => {
+    if (!message) {
+      return;
+    }
+
+    const timeoutID = window.setTimeout(() => setMessage(""), 3200);
+    return () => window.clearTimeout(timeoutID);
+  }, [message]);
+
+  useEffect(() => {
     if (messageMode === "unstrict" && !canAccessUnstrict) {
       setMessageMode("strict");
     }
@@ -329,12 +404,22 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       if (target.closest("[data-composer-dropdown]")) {
         return;
       }
+      if (target.closest("[data-empty-composer-menu]")) {
+        return;
+      }
+      if (target.closest("[data-chat-actions]")) {
+        return;
+      }
       setOpenComposerDropdown(null);
+      setOpenEmptyComposerMenu(null);
+      setOpenChatActionsFor(null);
     }
 
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setOpenComposerDropdown(null);
+        setOpenEmptyComposerMenu(null);
+        setOpenChatActionsFor(null);
       }
     }
 
@@ -436,6 +521,10 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     return rolePermissionOptions.find((permission) => permission.key === permissionKey)?.label || permissionKey;
   }
 
+  function themeLabel(theme: ThemePreference) {
+    return themeOptions.find((entry) => entry.value === theme)?.label || theme;
+  }
+
   function formatPermissionList(permissionKeys: string[]) {
     if (permissionKeys.length === 0) {
       return "—";
@@ -458,7 +547,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   }, [messages, view]);
 
   useEffect(() => {
-    if (!isSettingsOpen && !isUploadModalOpen && !isCitationPreviewOpen) {
+    if (!isSettingsOpen && !isUploadModalOpen && !isRenameChatModalOpen && !isCitationPreviewOpen) {
       return;
     }
 
@@ -466,13 +555,14 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       if (event.key === "Escape") {
         setIsSettingsOpen(false);
         setIsUploadModalOpen(false);
+        setIsRenameChatModalOpen(false);
         setIsCitationPreviewOpen(false);
       }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isSettingsOpen, isUploadModalOpen, isCitationPreviewOpen]);
+  }, [isSettingsOpen, isUploadModalOpen, isRenameChatModalOpen, isCitationPreviewOpen]);
 
   useEffect(() => {
     if (!user || view !== "chat") {
@@ -1007,7 +1097,11 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   }
 
   async function onDeleteChat() {
-    if (!token || !activeChatID) {
+    await onDeleteChatByID(activeChatID);
+  }
+
+  async function onDeleteChatByID(chatID: string) {
+    if (!token || !chatID) {
       return;
     }
 
@@ -1018,13 +1112,19 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setIsBusy(true);
     setMessage("");
     setError("");
+    setOpenChatActionsFor(null);
     try {
-      await request(`/chats/${activeChatID}`, {
+      await request(`/chats/${chatID}`, {
         method: "DELETE",
         token
       });
 
       const list = await refreshChats(token);
+      if (chatID !== activeChatID) {
+        setMessage(messages.feedback.chatDeleted);
+        return;
+      }
+
       if (list.length === 0) {
         const created = await request<Chat>("/chats", {
           method: "POST",
@@ -1040,6 +1140,51 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
         await loadChatMessages(token, nextChatID);
       }
       setMessage(messages.feedback.chatDeleted);
+    } catch (requestError) {
+      setError(errorMessage(requestError, messages.feedback.unexpectedError));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function onRenameChat(chat: Chat) {
+    setChatRenameTarget(chat);
+    setRenameChatTitle(chat.title || messages.shell.newChat);
+    setIsRenameChatModalOpen(true);
+    setOpenChatActionsFor(null);
+  }
+
+  function closeRenameChatModal() {
+    setIsRenameChatModalOpen(false);
+    setChatRenameTarget(null);
+    setRenameChatTitle("");
+  }
+
+  async function onSubmitRenameChat(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    if (!token || !chatRenameTarget) {
+      return;
+    }
+
+    const currentTitle = chatRenameTarget.title || messages.shell.newChat;
+    const nextTitle = renameChatTitle.trim();
+    if (!nextTitle || nextTitle === currentTitle) {
+      closeRenameChatModal();
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      const updated = await request<Chat>(`/chats/${chatRenameTarget.id}`, {
+        method: "PATCH",
+        token,
+        body: { title: nextTitle }
+      });
+      setChats((current) => current.map((entry) => entry.id === updated.id ? updated : entry));
+      setMessage(messages.feedback.chatRenamed);
+      closeRenameChatModal();
     } catch (requestError) {
       setError(errorMessage(requestError, messages.feedback.unexpectedError));
     } finally {
@@ -1253,6 +1398,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setIsStreamingMessage(false);
     setStreamStartedAt(null);
     setStreamElapsedSeconds(0);
+    setIsSessionBootstrapping(false);
   }
 
   const activeChat = useMemo(
@@ -1269,6 +1415,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
 
   const shellClassName = user ? "shell shellApp" : "shell";
   const cardClassName = user ? "card cardApp" : "card";
+  const isShowingAuthScreen = !user && !isSessionBootstrapping;
 
   return (
     <main className={shellClassName}>
@@ -1276,19 +1423,28 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
         {message && <div className="message success">{message}</div>}
         {error && <div className="message error">{error}</div>}
 
-        {!user && (
+        {isSessionBootstrapping && (
+          <div className="sessionSplash">
+            <div className="sessionSplashCard">
+              <p className="sessionSplashEyebrow">Vertex RAG</p>
+              <h1 className="sessionSplashTitle">{messages.shell.workspace}</h1>
+              <div className="sessionSplashLoader" aria-hidden="true" />
+            </div>
+          </div>
+        )}
+
+        {isShowingAuthScreen && (
           <div className="headerRow">
             <div className="headerRowTop">
               <div>
                 <h1>{messages.auth.loginTitle}</h1>
               </div>
-              <LocaleSwitcher />
             </div>
             <p className="hint">{messages.auth.ownerConsole}</p>
           </div>
         )}
 
-        {!user && (
+        {isShowingAuthScreen && (
           <>
             <div className="toggleRow">
               <button
@@ -1357,11 +1513,6 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
           <div className="appShell">
             <aside className={`sidebar ${isNavOpen ? "open" : ""}`}>
               <div className="sidebarTop">
-                <div className="sidebarBrand">
-                  <div className="sidebarTitle">Vertex RAG</div>
-                  <div className="sidebarSub">{messages.shell.workspace}</div>
-                </div>
-                <LocaleSwitcher />
               </div>
 
               <div className="sidebarSection" data-tour="chat-nav">
@@ -1375,21 +1526,61 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                       aria-label={messages.shell.createChat}
                       data-tour="chat-create"
                     >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M15 4h5v5" />
+                        <path d="M14 10 20 4" />
+                        <path d="M20 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5" />
+                      </svg>
                     </button>
                   </div>
                 </div>
                 <div className="chatList" role="list">
                   {chats.map((chat) => (
-                    <button
+                    <div
                       key={chat.id}
-                      type="button"
                       className={`chatListItem ${chat.id === activeChatID ? "active" : ""}`}
-                      onClick={() => void onSelectChat(chat.id)}
                       role="listitem"
                     >
-                      <span className="chatListTitle">{chat.title}</span>
-                    </button>
+                      <button
+                        type="button"
+                        className="chatListSelectBtn"
+                        onClick={() => void onSelectChat(chat.id)}
+                      >
+                        <span className="chatListTitle">{chat.title}</span>
+                      </button>
+                      <div className="chatActions" data-chat-actions>
+                        <button
+                          type="button"
+                          className="chatActionsTrigger"
+                          aria-label={messages.shell.chatActions}
+                          onClick={() => setOpenChatActionsFor((current) => current === chat.id ? null : chat.id)}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                            <circle cx="5" cy="12" r="1.8" />
+                            <circle cx="12" cy="12" r="1.8" />
+                            <circle cx="19" cy="12" r="1.8" />
+                          </svg>
+                        </button>
+                        {openChatActionsFor === chat.id && (
+                          <div className="chatActionsMenu" role="menu">
+                            <button
+                              type="button"
+                              className="chatActionsOption"
+                              onClick={() => void onRenameChat(chat)}
+                            >
+                              {messages.shell.renameChat}
+                            </button>
+                            <button
+                              type="button"
+                              className="chatActionsOption chatActionsOptionDanger"
+                              onClick={() => void onDeleteChatByID(chat.id)}
+                            >
+                              {messages.shell.deleteChat}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   ))}
                   {chats.length === 0 && <div className="chatListEmpty">{messages.shell.noChats}</div>}
                 </div>
@@ -1424,35 +1615,33 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                 </button>
 
                 <div className="mainHeaderTitle">
-                  {view === "chat" && <span>{activeChat?.title || messages.shell.newChat}</span>}
+                  {view === "chat" && (
+                    <ComposerDropdownMenu
+                      isOpen={openComposerDropdown === "model"}
+                      label={modelOptions.find((option) => option.value === selectedModel)?.label || messages.chat.modelQwen}
+                      onToggle={() => setOpenComposerDropdown((current) => current === "model" ? null : "model")}
+                      options={modelOptions}
+                      onSelect={(value) => {
+                        setSelectedModel(value as ChatModel);
+                        setOpenComposerDropdown(null);
+                      }}
+                      menuPlacement="bottom"
+                      ariaLabel={messages.chat.model}
+                      triggerClassName="headerModelTrigger"
+                      menuClassName="headerModelMenu"
+                      optionClassName="headerModelOption"
+                    />
+                  )}
                   {view === "knowledge" && <span>{messages.shell.knowledge}</span>}
                   {view === "users" && <span>{messages.shell.users}</span>}
                   {view === "account" && <span>{messages.shell.account}</span>}
                 </div>
-                <div className="mainHeaderRight">
-                  {view === "chat" && activeChatID && (
-                    <button
-                      type="button"
-                      className="btn btnSecondary btnSmall"
-                      onClick={() => void onDeleteChat()}
-                      disabled={isBusy || isStreamingMessage}
-                    >
-                      {messages.shell.deleteChat}
-                    </button>
-                  )}
-                </div>
+                <div className="mainHeaderRight"></div>
               </header>
 
               {view === "chat" && (
                 <div className="chatPane">
                   <div className="chatScroll" ref={scrollRef}>
-                    {chatMessages.length === 0 && (
-                      <div className="chatEmpty">
-                        <div className="chatEmptyTitle">{messages.chat.emptyTitle}</div>
-                        <div className="chatEmptyBody">{messages.chat.emptyBody}</div>
-                      </div>
-                    )}
-
                     {chatMessages.map((entry) => (
                       <div
                         key={entry.id}
@@ -1522,79 +1711,209 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                     )}
                   </div>
 
-                  <div className="composerCloud" aria-hidden="true" />
-                  <form className="composer" onSubmit={(event) => void onSendMessage(event)}>
+                  {!isChatPristine && <div className="composerCloud" aria-hidden="true" />}
+                  <form className={`composer ${isChatPristine ? "composerEmpty" : ""}`} onSubmit={(event) => void onSendMessage(event)}>
+                    {isChatPristine && <div className="chatGreeting">{emptyGreeting}</div>}
                     <div className="composerCard">
-                      <textarea
-                        ref={composerRef}
-                        value={draftMessage}
-                        onChange={(event) => {
-                          setDraftMessage(event.target.value);
-                          event.currentTarget.style.height = "auto";
-                          event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`;
-                        }}
-                        placeholder={messages.chat.composerPlaceholder}
-                        rows={1}
-                        className="composerInput"
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" && !event.shiftKey) {
-                            event.preventDefault();
-                            void onSendMessage();
-                          }
-                        }}
-                      />
-                      <div className="composerBottomRow">
-                        <div className="composerTabs" aria-label={messages.chat.composerOptions}>
+                      {isChatPristine ? (
+                        <div className="composerEmptyRow">
+                          <div className="emptyComposerMenuWrap" data-empty-composer-menu>
+                            <button
+                              type="button"
+                              className="iconCreateBtn composerActionBtn composerEmptyTrigger"
+                              onClick={() => setOpenEmptyComposerMenu((current) => current === "root" ? null : "root")}
+                              aria-label={messages.chat.composerOptions}
+                              data-tour="upload-btn"
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                              </svg>
+                            </button>
+                            {openEmptyComposerMenu && (
+                              <div className="emptyComposerMenu" role="menu">
+                                <button
+                                  type="button"
+                                  className="emptyComposerMenuOption"
+                                  onClick={() => {
+                                    setIsUploadModalOpen(true);
+                                    setOpenEmptyComposerMenu(null);
+                                  }}
+                                >
+                                  <span className="emptyComposerMenuOptionIcon" aria-hidden="true">
+                                    <EmptyMenuFilesIcon />
+                                  </span>
+                                  <span>{messages.chat.uploadFile}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`emptyComposerMenuOption ${openEmptyComposerMenu === "mode" ? "active" : ""}`}
+                                  onClick={() => setOpenEmptyComposerMenu((current) => current === "mode" ? "root" : "mode")}
+                                >
+                                  <span className="emptyComposerMenuOptionIcon" aria-hidden="true">
+                                    <EmptyMenuModeIcon />
+                                  </span>
+                                  <span>{modeOptions.find((option) => option.value === messageMode)?.label || messages.chat.modeStrict}</span>
+                                  <span className="emptyComposerMenuOptionChevron" aria-hidden="true">
+                                    <EmptyMenuChevronIcon />
+                                  </span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`emptyComposerMenuOption ${openEmptyComposerMenu === "profile" ? "active" : ""}`}
+                                  onClick={() => setOpenEmptyComposerMenu((current) => current === "profile" ? "root" : "profile")}
+                                >
+                                  <span className="emptyComposerMenuOptionIcon" aria-hidden="true">
+                                    <EmptyMenuProfileIcon />
+                                  </span>
+                                  <span>{activeResponseProfile.label}</span>
+                                  <span className="emptyComposerMenuOptionChevron" aria-hidden="true">
+                                    <EmptyMenuChevronIcon />
+                                  </span>
+                                </button>
+                                {openEmptyComposerMenu === "mode" && (
+                                  <div className="emptyComposerSubmenu" role="menu">
+                                    {modeOptions.map((option) => (
+                                      <button
+                                        key={option.value}
+                                        type="button"
+                                        className="emptyComposerMenuOption"
+                                        onClick={() => {
+                                          setMessageMode(option.value);
+                                          setOpenEmptyComposerMenu("root");
+                                        }}
+                                      >
+                                        {option.label}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                {openEmptyComposerMenu === "profile" && (
+                                  <div className="emptyComposerSubmenu" role="menu">
+                                    {responseProfiles.map((profile) => (
+                                      <button
+                                        key={profile.id}
+                                        type="button"
+                                        className="emptyComposerMenuOption"
+                                        onClick={() => {
+                                          setResponseProfile(profile.id);
+                                          setOpenEmptyComposerMenu("root");
+                                        }}
+                                      >
+                                        {profile.label}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          <textarea
+                            ref={composerRef}
+                            value={draftMessage}
+                            onChange={(event) => {
+                              setDraftMessage(event.target.value);
+                              event.currentTarget.style.height = "auto";
+                              event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`;
+                            }}
+                            placeholder={messages.chat.composerPlaceholder}
+                            rows={1}
+                            className="composerInput composerInputEmpty"
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" && !event.shiftKey) {
+                                event.preventDefault();
+                                void onSendMessage();
+                              }
+                            }}
+                          />
                           <button
-                            type="button"
-                            className="iconCreateBtn composerActionBtn"
-                            onClick={() => setIsUploadModalOpen(true)}
-                            aria-label={messages.chat.uploadFile}
-                            data-tour="upload-btn"
+                            type="submit"
+                            className="btn btnPrimary composerSendBtn"
+                            disabled={isBusy || isStreamingMessage || draftMessage.trim() === ""}
                           >
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <path d="M12 19V5" />
+                              <path d="m6 11 6-6 6 6" />
+                            </svg>
                           </button>
-                          <div className="composerSelectGroup" aria-label={messages.chat.responseMode} data-tour="mode-toggle">
-                            <ComposerDropdownMenu
-                              isOpen={openComposerDropdown === "mode"}
-                              label={modeOptions.find((option) => option.value === messageMode)?.label || messages.chat.modeStrict}
-                              onToggle={() => setOpenComposerDropdown((current) => current === "mode" ? null : "mode")}
-                              options={modeOptions.map((option) => ({
-                                value: option.value,
-                                label: option.label
-                              }))}
-                              onSelect={(value) => {
-                                setMessageMode(value as "strict" | "unstrict");
-                                setOpenComposerDropdown(null);
-                              }}
-                            />
-                            {!canAccessUnstrict && <span className="modeToggleHint">{messages.chat.unstrictDisabled}</span>}
-                          </div>
-                          <div className="composerSelectGroup" aria-label={messages.chat.responseProfile}>
-                            <ComposerDropdownMenu
-                              isOpen={openComposerDropdown === "profile"}
-                              label={activeResponseProfile.label}
-                              onToggle={() => setOpenComposerDropdown((current) => current === "profile" ? null : "profile")}
-                              options={responseProfiles.map((profile) => ({
-                                value: profile.id,
-                                label: profile.label
-                              }))}
-                              onSelect={(value) => {
-                                setResponseProfile(value as ResponseProfile);
-                                setOpenComposerDropdown(null);
-                              }}
-                            />
-                          </div>
                         </div>
+                      ) : (
+                        <>
+                          <textarea
+                            ref={composerRef}
+                            value={draftMessage}
+                            onChange={(event) => {
+                              setDraftMessage(event.target.value);
+                              event.currentTarget.style.height = "auto";
+                              event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`;
+                            }}
+                            placeholder={messages.chat.composerPlaceholder}
+                            rows={1}
+                            className="composerInput"
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" && !event.shiftKey) {
+                                event.preventDefault();
+                                void onSendMessage();
+                              }
+                            }}
+                          />
+                          <div className="composerBottomRow">
+                          <div className="composerTabs" aria-label={messages.chat.composerOptions}>
+                            <button
+                              type="button"
+                              className="iconCreateBtn composerActionBtn"
+                              onClick={() => setIsUploadModalOpen(true)}
+                              aria-label={messages.chat.uploadFile}
+                              data-tour="upload-btn"
+                            >
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                            </button>
+                            <div className="composerSelectGroup" aria-label={messages.chat.responseMode} data-tour="mode-toggle">
+                              <ComposerDropdownMenu
+                                isOpen={openComposerDropdown === "mode"}
+                                label={modeOptions.find((option) => option.value === messageMode)?.label || messages.chat.modeStrict}
+                                onToggle={() => setOpenComposerDropdown((current) => current === "mode" ? null : "mode")}
+                                options={modeOptions.map((option) => ({
+                                  value: option.value,
+                                  label: option.label
+                                }))}
+                                onSelect={(value) => {
+                                  setMessageMode(value as "strict" | "unstrict");
+                                  setOpenComposerDropdown(null);
+                                }}
+                              />
+                              {!canAccessUnstrict && <span className="modeToggleHint">{messages.chat.unstrictDisabled}</span>}
+                            </div>
+                            <div className="composerSelectGroup" aria-label={messages.chat.responseProfile}>
+                              <ComposerDropdownMenu
+                                isOpen={openComposerDropdown === "profile"}
+                                label={activeResponseProfile.label}
+                                onToggle={() => setOpenComposerDropdown((current) => current === "profile" ? null : "profile")}
+                                options={responseProfiles.map((profile) => ({
+                                  value: profile.id,
+                                  label: profile.label
+                                }))}
+                                onSelect={(value) => {
+                                  setResponseProfile(value as ResponseProfile);
+                                  setOpenComposerDropdown(null);
+                                }}
+                              />
+                            </div>
+                          </div>
 
-                        <button
-                          type="submit"
-                          className="btn btnPrimary composerSendBtn"
-                          disabled={isBusy || isStreamingMessage || draftMessage.trim() === ""}
-                        >
-                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
-                        </button>
-                      </div>
+                          <button
+                            type="submit"
+                            className="btn btnPrimary composerSendBtn"
+                            disabled={isBusy || isStreamingMessage || draftMessage.trim() === ""}
+                          >
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <path d="M12 19V5" />
+                              <path d="m6 11 6-6 6 6" />
+                            </svg>
+                          </button>
+                          </div>
+                        </>
+                      )}
                     </div>
                   </form>
                 </div>
@@ -1920,132 +2239,118 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               aria-label={messages.settings.title}
               onClick={(event) => event.stopPropagation()}
             >
-              <div className="settingsModalBar">
-                <div className="settingsModalTitle">{messages.settings.title}</div>
-                <button type="button" className="iconCreateBtn" onClick={() => setIsSettingsOpen(false)} aria-label={messages.settings.close}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                </button>
-              </div>
-
-              <div className="settingsModalContent settingsModalContentSplit">
-                <div className="settingsModalNav settingsModalNavVertical">
-                  <button
-                    type="button"
-                    className={`settingsModalBtn ${settingsTab === "knowledge" ? "active" : ""}`}
-                    onClick={() => setSettingsTab("knowledge")}
-                  >
-                    {messages.settings.knowledge}
+              <div className="settingsModalShell">
+                <aside className="settingsModalSidebar">
+                  <button type="button" className="settingsModalCloseBtn" onClick={() => setIsSettingsOpen(false)} aria-label={messages.settings.close}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                   </button>
-                  <button
-                    type="button"
-                    className={`settingsModalBtn ${settingsTab === "users" ? "active" : ""}`}
-                    disabled={!canManageUsers}
-                    onClick={() => setSettingsTab("users")}
-                  >
-                    {messages.settings.users}
-                  </button>
-                  <button
-                    type="button"
-                    className={`settingsModalBtn ${settingsTab === "roles" ? "active" : ""}`}
-                    disabled={!canManageRoles}
-                    onClick={() => setSettingsTab("roles")}
-                  >
-                    {messages.settings.roles}
-                  </button>
-                  <button
-                    type="button"
-                    className={`settingsModalBtn ${settingsTab === "account" ? "active" : ""}`}
-                    onClick={() => setSettingsTab("account")}
-                  >
-                    {messages.settings.account}
-                  </button>
-                  <button
-                    type="button"
-                    className="settingsModalBtn settingsModalBtnDanger"
-                    onClick={() => void onLogout()}
-                    disabled={isBusy}
-                  >
-                    {messages.settings.logout}
-                  </button>
-                </div>
+                  <div className="settingsModalNav settingsModalNavVertical">
+                    {settingsTabs.map((tab) => (
+                      <button
+                        key={tab.key}
+                        type="button"
+                        className={`settingsModalBtn ${settingsTab === tab.key ? "active" : ""}`}
+                        disabled={tab.disabled}
+                        onClick={() => setSettingsTab(tab.key)}
+                      >
+                        <span className="settingsModalBtnIcon" aria-hidden="true">
+                          {settingsTabIcons[tab.key]}
+                        </span>
+                        <span>{tab.label}</span>
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      className="settingsModalBtn settingsModalBtnDanger"
+                      onClick={() => void onLogout()}
+                      disabled={isBusy}
+                    >
+                      <span className="settingsModalBtnIcon" aria-hidden="true">
+                        <SettingsIconLogout />
+                      </span>
+                      <span>{messages.settings.logout}</span>
+                    </button>
+                  </div>
+                </aside>
                 <div className="settingsModalPane">
                   <div className="settingsPaneContent" key={settingsTab}>
+                    <div className="settingsModalHeader">
+                      <div className="settingsModalTitle">{settingsTitleByTab[settingsTab]}</div>
+                    </div>
                     {settingsTab === "knowledge" && (
-                      <>
-                        {canUploadDocs && (
-                          <div className="settingsRow">
-                            <button
-                              type="button"
-                              className="btn btnSmall"
-                              onClick={() => void onReingestAllDocuments()}
-                              disabled={isBusy}
-                            >
-                              {messages.knowledge.reingestAll}
-                            </button>
-                          </div>
-                        )}
-                        <div className="tableWrap">
-                          <table>
-                            <thead>
-                              <tr>
-                                <th>{messages.knowledge.name}</th>
-                                <th>{messages.knowledge.filename}</th>
-                                <th>{messages.knowledge.status}</th>
-                                <th>{messages.knowledge.accessRoles}</th>
-                                {canUploadDocs && <th>{messages.knowledge.actions}</th>}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {documents.map((entry) => (
-                                <tr key={entry.id}>
-                                  <td>{entry.title}</td>
-                                  <td>{entry.filename}</td>
-                                  <td>{getTranslatedStatus(entry.status)}</td>
-                                  <td>{entry.allowed_role_ids.join(", ")}</td>
-                                  {canUploadDocs && (
-                                    <td>
-                                      <button
-                                        type="button"
-                                        className="btn btnSmall"
-                                        onClick={() => void onReingestDocument(entry.id)}
-                                        disabled={isBusy}
-                                      >
-                                        {messages.knowledge.reingest}
-                                      </button>
-                                    </td>
-                                  )}
-                                </tr>
-                              ))}
-                              {documents.length === 0 && (
-                                <tr>
-                                  <td colSpan={canUploadDocs ? 5 : 4}>{messages.knowledge.noDocuments}</td>
-                                </tr>
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
-                      </>
+                      <div className="settingsSections">
+                        <SettingsSection
+                          title={messages.settings.documentLibrary}
+                          description={messages.settings.knowledgeHint}
+                        >
+                          {canUploadDocs && (
+                            <SettingsRow
+                              label={messages.knowledge.reingestAll}
+                              description={messages.settings.knowledgeHint}
+                              action={
+                                <button
+                                  type="button"
+                                  className="btn btnSmall settingsActionBtn"
+                                  onClick={() => void onReingestAllDocuments()}
+                                  disabled={isBusy}
+                                >
+                                  {messages.knowledge.reingestAll}
+                                </button>
+                              }
+                            />
+                          )}
+                          {documents.length === 0 ? (
+                            <SettingsEmptyState>{messages.knowledge.noDocuments}</SettingsEmptyState>
+                          ) : (
+                            documents.map((entry) => (
+                              <SettingsRow
+                                key={entry.id}
+                                label={entry.title || entry.filename}
+                                description={`${messages.knowledge.file}: ${entry.filename}`}
+                                meta={[
+                                  getTranslatedStatus(entry.status),
+                                  entry.allowed_role_ids.length > 0
+                                    ? `${messages.settings.uploadAllowedRoles}: ${entry.allowed_role_ids
+                                        .map((roleID) => roles.find((role) => role.id === roleID)?.name || String(roleID))
+                                        .join(", ")}`
+                                    : messages.settings.noRolesSelected
+                                ]}
+                                action={
+                                  canUploadDocs ? (
+                                    <button
+                                      type="button"
+                                      className="btn btnSecondary btnSmall settingsActionBtn"
+                                      onClick={() => void onReingestDocument(entry.id)}
+                                      disabled={isBusy}
+                                    >
+                                      {messages.knowledge.reingest}
+                                    </button>
+                                  ) : undefined
+                                }
+                              />
+                            ))
+                          )}
+                        </SettingsSection>
+                      </div>
                     )}
                     {settingsTab === "users" &&
                       (canManageUsers ? (
-                        <div className="tableWrap">
-                          <table>
-                            <thead>
-                              <tr>
-                                <th>{messages.auth.email}</th>
-                                <th>{messages.roles.role}</th>
-                                <th>{messages.knowledge.status}</th>
-                                <th>{messages.users.save}</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {users.map((entry) => (
-                                <tr key={entry.id}>
-                                  <td>{entry.email}</td>
-                                  <td>{entry.role_name}</td>
-                                  <td>{getTranslatedStatus(entry.status)}</td>
-                                  <td>
-                                    <div className="assignRow">
+                        <div className="settingsSections">
+                          <SettingsSection
+                            title={messages.users.title}
+                            description={messages.settings.manageUsersHint}
+                          >
+                            {users.length === 0 ? (
+                              <SettingsEmptyState>{messages.users.notFound}</SettingsEmptyState>
+                            ) : (
+                              users.map((entry) => (
+                                <SettingsRow
+                                  key={entry.id}
+                                  label={entry.email}
+                                  description={`${messages.roles.role}: ${entry.role_name}`}
+                                  meta={[getTranslatedStatus(entry.status)]}
+                                  action={
+                                    <div className="settingsInlineControls">
                                       <select
                                         value={draftRoleByUser[entry.id] || entry.role_id}
                                         onChange={(event) =>
@@ -2063,171 +2368,185 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                                       </select>
                                       <button
                                         type="button"
-                                        className="btn btnSmall"
+                                        className="btn btnSmall settingsActionBtn"
                                         onClick={() => void onChangeRole(entry.id)}
                                         disabled={isBusy}
                                       >
                                         {messages.users.save}
                                       </button>
                                     </div>
-                                  </td>
-                                </tr>
-                              ))}
-                              {users.length === 0 && (
-                                <tr>
-                                  <td colSpan={4}>{messages.users.notFound}</td>
-                                </tr>
-                              )}
-                            </tbody>
-                          </table>
+                                  }
+                                />
+                              ))
+                            )}
+                          </SettingsSection>
                         </div>
                       ) : (
                         <p className="notice">{messages.users.noAccess}</p>
                       ))}
                     {settingsTab === "roles" &&
                       (canManageRoles ? (
-                        <>
-                          <div className="formGrid">
-                            <label>
-                              {messages.roles.roleName}
-                              <input
-                                type="text"
-                                value={roleDraftName}
-                                onChange={(event) => setRoleDraftName(event.target.value)}
-                                placeholder={messages.roles.rolePlaceholder}
-                                disabled={isBusy}
-                              />
-                            </label>
-                            <div>
-                              <p className="hint">{messages.roles.permissions}</p>
-                              <div className="rolesGrid">
-                                {rolePermissionOptions.map((permission) => (
-                                  <label key={permission.key} className="roleCheck">
-                                    <input
-                                      type="checkbox"
-                                      checked={roleDraftPermissions.includes(permission.key)}
-                                      onChange={() => toggleRoleDraftPermission(permission.key)}
-                                      disabled={isBusy}
-                                    />
-                                    <span>{permission.label}</span>
-                                  </label>
-                                ))}
+                        <div className="settingsSections">
+                          <SettingsSection
+                            title={editingRoleID ? messages.roles.update : messages.settings.createRole}
+                            description={messages.settings.manageRolesHint}
+                          >
+                            <div className="settingsFormCard">
+                              <label>
+                                {messages.roles.roleName}
+                                <input
+                                  type="text"
+                                  value={roleDraftName}
+                                  onChange={(event) => setRoleDraftName(event.target.value)}
+                                  placeholder={messages.roles.rolePlaceholder}
+                                  disabled={isBusy}
+                                />
+                              </label>
+                              <div>
+                                <p className="hint">{messages.roles.permissions}</p>
+                                <div className="rolesGrid settingsPermissionGrid">
+                                  {rolePermissionOptions.map((permission) => (
+                                    <label key={permission.key} className="roleCheck settingsPermissionItem">
+                                      <input
+                                        type="checkbox"
+                                        checked={roleDraftPermissions.includes(permission.key)}
+                                        onChange={() => toggleRoleDraftPermission(permission.key)}
+                                        disabled={isBusy}
+                                      />
+                                      <span>{permission.label}</span>
+                                    </label>
+                                  ))}
+                                </div>
+                              </div>
+                              <div className="settingsInlineControls">
+                                <button type="button" className="btn btnPrimary btnSmall settingsActionBtn" onClick={() => void onSaveRole()} disabled={isBusy}>
+                                  {editingRoleID ? messages.roles.update : messages.roles.create}
+                                </button>
+                                {editingRoleID && (
+                                  <button type="button" className="btn btnGhost btnSmall settingsActionBtn" onClick={resetRoleDraft} disabled={isBusy}>
+                                    {messages.roles.cancel}
+                                  </button>
+                                )}
                               </div>
                             </div>
-                            <div className="assignRow">
-                              <button type="button" className="btn btnSmall" onClick={() => void onSaveRole()} disabled={isBusy}>
-                                {editingRoleID ? messages.roles.update : messages.roles.create}
-                              </button>
-                              {editingRoleID && (
-                                <button type="button" className="btn btnGhost btnSmall" onClick={resetRoleDraft} disabled={isBusy}>
-                                  {messages.roles.cancel}
-                                </button>
-                              )}
-                            </div>
-                          </div>
+                          </SettingsSection>
 
-                          <div className="tableWrap">
-                            <table>
-                              <thead>
-                                <tr>
-                                  <th>{messages.roles.role}</th>
-                                  <th>{messages.roles.permissions}</th>
-                                  <th>{messages.knowledge.actions}</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {roles.map((role) => (
-                                  <tr key={role.id}>
-                                    <td>
-                                      {role.name}
-                                      {role.is_default && ` (${messages.roles.defaultSuffix})`}
-                                    </td>
-                                    <td>{formatPermissionList(role.permissions)}</td>
-                                    <td>
-                                      <div className="assignRow">
-                                        <button
-                                          type="button"
-                                          className="btn btnSmall"
-                                          onClick={() => onStartEditRole(role)}
-                                          disabled={isBusy || role.is_default}
-                                        >
-                                          {messages.roles.edit}
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="btn btnGhost btnSmall"
-                                          onClick={() => void onDeleteRole(role)}
-                                          disabled={isBusy || role.is_default}
-                                        >
-                                          {messages.roles.delete}
-                                        </button>
-                                      </div>
-                                    </td>
-                                  </tr>
-                                ))}
-                                {roles.length === 0 && (
-                                  <tr>
-                                    <td colSpan={3}>{messages.roles.notFound}</td>
-                                  </tr>
-                                )}
-                              </tbody>
-                            </table>
-                          </div>
-                        </>
+                          <SettingsSection
+                            title={messages.settings.roleDirectory}
+                            description={messages.settings.manageRolesHint}
+                          >
+                            {roles.length === 0 ? (
+                              <SettingsEmptyState>{messages.roles.notFound}</SettingsEmptyState>
+                            ) : (
+                              roles.map((role) => (
+                                <SettingsRow
+                                  key={role.id}
+                                  label={`${role.name}${role.is_default ? ` (${messages.roles.defaultSuffix})` : ""}`}
+                                  description={role.permissions.length > 0 ? formatPermissionList(role.permissions) : messages.settings.noPermissions}
+                                  action={
+                                    <div className="settingsInlineControls">
+                                      <button
+                                        type="button"
+                                        className="btn btnSmall settingsActionBtn"
+                                        onClick={() => onStartEditRole(role)}
+                                        disabled={isBusy || role.is_default}
+                                      >
+                                        {messages.roles.edit}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="btn btnGhost btnSmall settingsActionBtn"
+                                        onClick={() => void onDeleteRole(role)}
+                                        disabled={isBusy || role.is_default}
+                                      >
+                                        {messages.roles.delete}
+                                      </button>
+                                    </div>
+                                  }
+                                />
+                              ))
+                            )}
+                          </SettingsSection>
+                        </div>
                       ) : (
                         <p className="notice">{messages.roles.noAccess}</p>
                       ))}
                     {settingsTab === "account" && (
-                      <>
-                        <div className="panelSection">
-                          <h2>{messages.account.title}</h2>
-                          <div className="accountGrid">
-                            <p>
-                              <strong>{messages.account.user}</strong>
-                              <br />
-                              {user.email}
-                            </p>
-                            <p>
-                              <strong>{messages.account.role}</strong>
-                              <br />
-                              {user.role_name}
-                            </p>
-                            <p>
-                              <strong>{messages.account.organization}</strong>
-                              <br />
-                              {user.org_id}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="panelSection">
-                          <h2>{messages.account.defaultMode}</h2>
-                          <p className="hint">{messages.account.defaultModeHint}</p>
-                          <div className="settingsRow">
-                            <div className="modeToggle" role="tablist" aria-label={messages.account.defaultMode}>
-                              <button
-                                type="button"
-                                className={`modeToggleItem ${(settings?.default_mode || "strict") === "strict" ? "active" : ""}`}
-                                onClick={() => void onUpdateDefaultMode("strict")}
-                                disabled={isBusy}
-                              >
-                                {messages.chat.modeStrict}
-                              </button>
-                              {canAccessUnstrict ? (
+                      <div className="settingsSections">
+                        <SettingsSection
+                          title={messages.settings.appearance}
+                          description={messages.settings.accountHint}
+                        >
+                          <SettingsRow
+                            label={messages.settings.theme}
+                            description={messages.settings.themeHint}
+                            action={
+                              <div className="modeToggle" role="tablist" aria-label={messages.settings.theme}>
+                                {themeOptions.map((option) => (
+                                  <button
+                                    key={option.value}
+                                    type="button"
+                                    className={`modeToggleItem ${themePreference === option.value ? "active" : ""}`}
+                                    onClick={() => setThemePreference(option.value)}
+                                  >
+                                    {option.label}
+                                  </button>
+                                ))}
+                              </div>
+                            }
+                          />
+                          <SettingsRow
+                            label={messages.localeSwitcherLabel}
+                            action={<LocaleSwitcher />}
+                          />
+                        </SettingsSection>
+
+                        <SettingsSection
+                          title={messages.account.title}
+                          description={messages.account.defaultModeHint}
+                        >
+                          <SettingsRow
+                            label={messages.account.user}
+                            value={user.email}
+                          />
+                          <SettingsRow
+                            label={messages.account.role}
+                            value={user.role_name}
+                          />
+                          <SettingsRow
+                            label={messages.account.organization}
+                            value={user.org_id}
+                          />
+                          <SettingsRow
+                            label={messages.account.defaultMode}
+                            description={messages.account.defaultModeHint}
+                            action={
+                              <div className="modeToggle" role="tablist" aria-label={messages.account.defaultMode}>
                                 <button
                                   type="button"
-                                  className={`modeToggleItem ${(settings?.default_mode || "strict") === "unstrict" ? "active" : ""}`}
-                                  onClick={() => void onUpdateDefaultMode("unstrict")}
+                                  className={`modeToggleItem ${defaultModeValue === "strict" ? "active" : ""}`}
+                                  onClick={() => void onUpdateDefaultMode("strict")}
                                   disabled={isBusy}
                                 >
-                                  {messages.chat.modeUnstrict}
+                                  {messages.chat.modeStrict}
                                 </button>
-                              ) : (
-                                <span className="modeToggleHint">{messages.chat.unstrictDisabled}</span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </>
+                                {canAccessUnstrict ? (
+                                  <button
+                                    type="button"
+                                    className={`modeToggleItem ${defaultModeValue === "unstrict" ? "active" : ""}`}
+                                    onClick={() => void onUpdateDefaultMode("unstrict")}
+                                    disabled={isBusy}
+                                  >
+                                    {messages.chat.modeUnstrict}
+                                  </button>
+                                ) : (
+                                  <span className="modeToggleHint">{messages.chat.unstrictDisabled}</span>
+                                )}
+                              </div>
+                            }
+                          />
+                        </SettingsSection>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -2248,56 +2567,132 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
               aria-label={messages.uploadModal.title}
               onClick={(event) => event.stopPropagation()}
             >
-              <div className="settingsModalBar">
-                <div className="settingsModalTitle">{messages.uploadModal.title}</div>
-                <button type="button" className="iconCreateBtn" onClick={() => setIsUploadModalOpen(false)} aria-label={messages.uploadModal.close}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                </button>
-              </div>
-              <div className="settingsModalContent settingsModalContentUpload">
-                {canUploadDocs ? (
-                  <form className="formGrid uploadFormCompact" onSubmit={onUploadDocument}>
-                    {error && <div className="uploadInlineFeedback uploadInlineFeedbackError">{error}</div>}
-                    {message && <div className="uploadInlineFeedback uploadInlineFeedbackSuccess">{message}</div>}
-                    <label className="uploadField">
-                      {messages.knowledge.titleOptional}
-                      <input
-                        value={documentTitle}
-                        onChange={(event) => setDocumentTitle(event.target.value)}
-                        placeholder={messages.knowledge.titlePlaceholder}
-                      />
-                    </label>
-                    <label className="uploadField">
-                      {messages.knowledge.file}
-                      <input
-                        type="file"
-                        onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
-                        required
-                      />
-                    </label>
-                    <fieldset className="uploadRolesFieldset">
-                      <legend>{messages.knowledge.allowedRoles}</legend>
-                      <div className="rolesGrid uploadRolesGrid">
-                        {roles.map((role) => (
-                          <label key={role.id} className="roleCheck">
-                            <input
-                              type="checkbox"
-                              checked={selectedRoleIDs.includes(role.id)}
-                              onChange={() => toggleUploadRole(role.id)}
-                            />
-                            <span>{role.name}</span>
-                          </label>
-                        ))}
+              <div className="settingsModalUploadShell">
+                <div className="settingsModalUploadHeader">
+                  <button type="button" className="settingsModalCloseBtn" onClick={() => setIsUploadModalOpen(false)} aria-label={messages.uploadModal.close}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                  </button>
+                  <div className="settingsModalTitle">{messages.uploadModal.title}</div>
+                </div>
+                <div className="settingsModalContent settingsModalContentUpload">
+                  {canUploadDocs ? (
+                    <form className="formGrid uploadFormCompact" onSubmit={onUploadDocument}>
+                      {error && <div className="uploadInlineFeedback uploadInlineFeedbackError">{error}</div>}
+                      {message && <div className="uploadInlineFeedback uploadInlineFeedbackSuccess">{message}</div>}
+
+                      <div className="settingsSections">
+                        <SettingsSection title={messages.uploadModal.title}>
+                          <SettingsRow
+                            label={messages.knowledge.titleOptional}
+                            action={
+                              <label className="uploadField uploadFieldInline">
+                                <input
+                                  value={documentTitle}
+                                  onChange={(event) => setDocumentTitle(event.target.value)}
+                                  placeholder={messages.knowledge.titlePlaceholder}
+                                />
+                              </label>
+                            }
+                          />
+                          <SettingsRow
+                            label={messages.knowledge.file}
+                            action={
+                              <label className="uploadField uploadFieldInline">
+                                <input
+                                  type="file"
+                                  onChange={(event) => setSelectedFile(event.target.files?.[0] || null)}
+                                  required
+                                />
+                              </label>
+                            }
+                          />
+                        </SettingsSection>
+
+                        <SettingsSection title={messages.knowledge.allowedRoles}>
+                          <fieldset className="uploadRolesFieldset">
+                            <div className="rolesGrid uploadRolesGrid">
+                              {roles.map((role) => (
+                                <label key={role.id} className="roleCheck settingsPermissionItem">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedRoleIDs.includes(role.id)}
+                                    onChange={() => toggleUploadRole(role.id)}
+                                  />
+                                  <span>{role.name}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </fieldset>
+                        </SettingsSection>
                       </div>
-                    </fieldset>
-                    <button type="submit" className="btn btnPrimary" disabled={!isUploadReady}>
-                      {isBusy ? messages.knowledge.uploadBusy : messages.knowledge.uploadSubmit}
-                    </button>
-                    {uploadHint && <p className="uploadHint">{uploadHint}</p>}
+
+                      <div className="uploadFooter">
+                        {uploadHint && <p className="uploadHint">{uploadHint}</p>}
+                        <button type="submit" className="btn btnPrimary uploadSubmitBtn" disabled={!isUploadReady}>
+                          {isBusy ? messages.knowledge.uploadBusy : messages.knowledge.uploadSubmit}
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <p className="notice">{messages.uploadModal.noAccess}</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {user && isRenameChatModalPresent && (
+          <div
+            className={`settingsModalOverlay ${isRenameChatModalOpen ? "modalOverlayVisible" : "modalOverlayHidden"}`}
+            onClick={closeRenameChatModal}
+          >
+            <div
+              className={`settingsModal settingsModalRename ${isRenameChatModalOpen ? "modalCardVisible" : "modalCardHidden"}`}
+              role="dialog"
+              aria-modal="true"
+              aria-label={messages.shell.renameChat}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="settingsModalUploadShell">
+                <div className="settingsModalUploadHeader">
+                  <button type="button" className="settingsModalCloseBtn" onClick={closeRenameChatModal} aria-label={messages.settings.close}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                  </button>
+                  <div className="settingsModalTitle">{messages.shell.renameChat}</div>
+                </div>
+                <div className="settingsModalContent settingsModalContentUpload">
+                  <form className="formGrid uploadFormCompact" onSubmit={onSubmitRenameChat}>
+                    <SettingsSection title={messages.shell.renameChat}>
+                      <SettingsRow
+                        label={messages.shell.renameChat}
+                        action={
+                          <label className="uploadField uploadFieldInline">
+                            <input
+                              value={renameChatTitle}
+                              onChange={(event) => setRenameChatTitle(event.target.value)}
+                              placeholder={messages.shell.newChat}
+                              autoFocus
+                            />
+                          </label>
+                        }
+                      />
+                    </SettingsSection>
+                    <div className="uploadFooter">
+                      <button
+                        type="button"
+                        className="btn btnSecondary uploadSubmitBtn"
+                        onClick={closeRenameChatModal}
+                        disabled={isBusy}
+                      >
+                        {messages.roles.cancel}
+                      </button>
+                      <button type="submit" className="btn btnPrimary uploadSubmitBtn" disabled={isBusy || renameChatTitle.trim() === ""}>
+                        {isBusy ? messages.auth.submitBusy : messages.users.save}
+                      </button>
+                    </div>
                   </form>
-                ) : (
-                  <p className="notice">{messages.uploadModal.noAccess}</p>
-                )}
+                </div>
               </div>
             </div>
           </div>
@@ -2444,22 +2839,33 @@ function ComposerDropdownMenu({
   label,
   options,
   onToggle,
-  onSelect
+  onSelect,
+  triggerClassName,
+  menuClassName,
+  optionClassName,
+  menuPlacement = "top",
+  ariaLabel
 }: {
   isOpen: boolean;
   label: string;
   options: Array<{ value: string; label: string }>;
   onToggle: () => void;
   onSelect: (value: string) => void;
+  triggerClassName?: string;
+  menuClassName?: string;
+  optionClassName?: string;
+  menuPlacement?: "top" | "bottom";
+  ariaLabel?: string;
 }) {
   return (
     <div className="composerDropdown" data-composer-dropdown>
       <button
         type="button"
-        className={`composerDropdownTrigger ${isOpen ? "open" : ""}`}
+        className={`composerDropdownTrigger ${triggerClassName || ""} ${isOpen ? "open" : ""}`.trim()}
         onClick={onToggle}
         aria-haspopup="listbox"
         aria-expanded={isOpen}
+        aria-label={ariaLabel || label}
       >
         <span>{label}</span>
         <svg className="composerDropdownIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -2467,12 +2873,15 @@ function ComposerDropdownMenu({
         </svg>
       </button>
       {isOpen && (
-        <div className="composerDropdownMenu" role="listbox">
+        <div
+          className={`composerDropdownMenu ${menuPlacement === "bottom" ? "composerDropdownMenuBottom" : ""} ${menuClassName || ""}`.trim()}
+          role="listbox"
+        >
           {options.map((option) => (
             <button
               key={option.value}
               type="button"
-              className="composerDropdownOption"
+              className={`composerDropdownOption ${optionClassName || ""}`.trim()}
               onClick={() => onSelect(option.value)}
             >
               {option.label}
@@ -2481,6 +2890,153 @@ function ComposerDropdownMenu({
         </div>
       )}
     </div>
+  );
+}
+
+function SettingsSection({
+  title,
+  description,
+  children
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="settingsGroup">
+      <div className="settingsGroupHeader">
+        <h2>{title}</h2>
+        {description ? <p className="hint">{description}</p> : null}
+      </div>
+      <div className="settingsGroupBody">{children}</div>
+    </section>
+  );
+}
+
+function SettingsRow({
+  label,
+  description,
+  value,
+  meta,
+  action
+}: {
+  label: string;
+  description?: string;
+  value?: ReactNode;
+  meta?: string[];
+  action?: ReactNode;
+}) {
+  return (
+    <div className="settingsListRow">
+      <div className="settingsListContent">
+        <div className="settingsListLabel">{label}</div>
+        {description ? <p className="settingsListDescription">{description}</p> : null}
+        {meta && meta.length > 0 ? (
+          <div className="settingsMetaList">
+            {meta.filter(Boolean).map((entry) => (
+              <span key={entry} className="settingsMetaPill">
+                {entry}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <div className="settingsListAction">
+        {action || (value ? <div className="settingsValueText">{value}</div> : null)}
+      </div>
+    </div>
+  );
+}
+
+function SettingsEmptyState({ children }: { children: ReactNode }) {
+  return <div className="settingsEmptyState">{children}</div>;
+}
+
+function SettingsIconKnowledge() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 19.5V6.8a2 2 0 0 1 2-2h11.2a2 2 0 0 1 2 2v12.7" />
+      <path d="M8 8h8" />
+      <path d="M8 12h8" />
+      <path d="M8 16h5" />
+    </svg>
+  );
+}
+
+function SettingsIconUsers() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2" />
+      <circle cx="9.5" cy="7" r="3.5" />
+      <path d="M20 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M15 3.13a3.5 3.5 0 0 1 0 6.74" />
+    </svg>
+  );
+}
+
+function SettingsIconRoles() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3 4 7.5v9L12 21l8-4.5v-9L12 3Z" />
+      <path d="M12 12 4 7.5" />
+      <path d="m12 12 8-4.5" />
+      <path d="M12 12v9" />
+    </svg>
+  );
+}
+
+function SettingsIconAccount() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 20a8 8 0 0 1 16 0" />
+    </svg>
+  );
+}
+
+function SettingsIconLogout() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <path d="m16 17 5-5-5-5" />
+      <path d="M21 12H9" />
+    </svg>
+  );
+}
+
+function EmptyMenuFilesIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </svg>
+  );
+}
+
+function EmptyMenuModeIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M7 7h10" />
+      <path d="M7 17h10" />
+      <path d="M9.5 7A2.5 2.5 0 1 1 7 9.5" />
+      <path d="M14.5 17A2.5 2.5 0 1 0 17 14.5" />
+    </svg>
+  );
+}
+
+function EmptyMenuProfileIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z" />
+    </svg>
+  );
+}
+
+function EmptyMenuChevronIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m9 6 6 6-6 6" />
+    </svg>
   );
 }
 

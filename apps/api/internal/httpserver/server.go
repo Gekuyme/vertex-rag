@@ -128,6 +128,7 @@ func New(
 	mux.Handle("GET /chats", chain(http.HandlerFunc(apiServer.listChats), authMW))
 	mux.Handle("POST /chats", chain(http.HandlerFunc(apiServer.createChat), authMW))
 	mux.Handle("GET /chats/{id}", chain(http.HandlerFunc(apiServer.getChat), authMW))
+	mux.Handle("PATCH /chats/{id}", chain(http.HandlerFunc(apiServer.updateChat), authMW))
 	mux.Handle("DELETE /chats/{id}", chain(http.HandlerFunc(apiServer.deleteChat), authMW))
 	mux.Handle("GET /chats/{id}/messages", chain(http.HandlerFunc(apiServer.listChatMessages), authMW))
 	mux.Handle("POST /chats/{id}/messages", chain(http.HandlerFunc(apiServer.createChatMessage), authMW))
@@ -933,6 +934,51 @@ func (s *Server) getChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, chat)
+}
+
+func (s *Server) updateChat(w http.ResponseWriter, r *http.Request) {
+	user, _ := currentUser(r.Context())
+	chatID := strings.TrimSpace(r.PathValue("id"))
+	if chatID == "" {
+		writeError(w, http.StatusBadRequest, "chat id is required")
+		return
+	}
+
+	chat, err := s.store.GetChat(r.Context(), user.OrgID, chatID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "chat not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load chat")
+		return
+	}
+	if chat.CreatedBy != user.ID {
+		writeError(w, http.StatusForbidden, "chat does not belong to current user")
+		return
+	}
+
+	var payload createChatRequest
+	if err := decodeJSONBody(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(payload.Title) == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+
+	updated, err := s.store.UpdateChatTitle(r.Context(), user.OrgID, chatID, payload.Title)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "chat not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to update chat")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (s *Server) deleteChat(w http.ResponseWriter, r *http.Request) {

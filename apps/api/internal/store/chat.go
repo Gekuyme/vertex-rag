@@ -208,6 +208,37 @@ func (s *Store) DeleteChat(ctx context.Context, orgID, chatID string) error {
 	return nil
 }
 
+func (s *Store) UpdateChatTitle(ctx context.Context, orgID, chatID, title string) (Chat, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return Chat{}, errors.New("chat title is required")
+	}
+
+	var chat Chat
+	err := s.pool.QueryRow(ctx, `
+		UPDATE chats
+		SET title = $3, updated_at = NOW()
+		WHERE id = $1
+		  AND org_id = $2
+		RETURNING id, org_id, created_by, title, created_at, updated_at
+	`, chatID, orgID, title).Scan(
+		&chat.ID,
+		&chat.OrgID,
+		&chat.CreatedBy,
+		&chat.Title,
+		&chat.CreatedAt,
+		&chat.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Chat{}, ErrNotFound
+		}
+		return Chat{}, fmt.Errorf("update chat title: %w", err)
+	}
+
+	return chat, nil
+}
+
 func (s *Store) ListChatMessages(ctx context.Context, orgID, chatID string, limit int) ([]ChatMessage, error) {
 	if limit <= 0 {
 		limit = 200
