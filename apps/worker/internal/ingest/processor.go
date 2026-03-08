@@ -11,6 +11,7 @@ import (
 
 	"github.com/Gekuyme/vertex-rag/apps/worker/internal/embeddings"
 	"github.com/Gekuyme/vertex-rag/apps/worker/internal/queue"
+	"github.com/Gekuyme/vertex-rag/apps/worker/internal/sparsesearch"
 	"github.com/Gekuyme/vertex-rag/apps/worker/internal/storage"
 	"github.com/Gekuyme/vertex-rag/apps/worker/internal/store"
 	"github.com/hibiken/asynq"
@@ -20,13 +21,15 @@ type Processor struct {
 	store      *store.Store
 	storage    *storage.Client
 	embeddings embeddings.Provider
+	sparse     *sparsesearch.Client
 }
 
-func NewProcessor(dbStore *store.Store, storageClient *storage.Client, embeddingsProvider embeddings.Provider) *Processor {
+func NewProcessor(dbStore *store.Store, storageClient *storage.Client, embeddingsProvider embeddings.Provider, sparseClient *sparsesearch.Client) *Processor {
 	return &Processor{
 		store:      dbStore,
 		storage:    storageClient,
 		embeddings: embeddingsProvider,
+		sparse:     sparseClient,
 	}
 }
 
@@ -79,42 +82,49 @@ func (p *Processor) ingestDocument(ctx context.Context, document store.DocumentF
 		return fmt.Errorf("extract text: %w", err)
 	}
 
-	chunks := chunkDocumentText(text, document.MIME, document.Filename)
-	if len(chunks) == 0 {
+	plan := chunkDocumentText(text, document.MIME, document.Filename)
+	if len(plan.Chunks) == 0 {
 		return errors.New("no chunks generated")
 	}
 
-	chunkTexts := make([]string, 0, len(chunks))
-	for _, chunk := range chunks {
-		chunkTexts = append(chunkTexts, buildEmbeddingInput(document.Filename, chunk))
+	chunkTexts := make([]string, 0, len(plan.Chunks))
+	for _, chunk := range plan.Chunks {
+		chunkTexts = append(chunkTexts, buildEmbeddingInput(document.Title, document.Filename, chunk))
 	}
 
 	vectors, err := p.embeddings.Embed(ctx, chunkTexts)
 	if err != nil {
 		return fmt.Errorf("embed chunks: %w", err)
 	}
-	if len(vectors) != len(chunks) {
-		return fmt.Errorf("embedding count mismatch: got %d, expected %d", len(vectors), len(chunks))
+	if len(vectors) != len(plan.Chunks) {
+		return fmt.Errorf("embedding count mismatch: got %d, expected %d", len(vectors), len(plan.Chunks))
 	}
 
-	for index := range chunks {
-		chunks[index].Embedding = vectors[index]
+	for index := range plan.Chunks {
+		plan.Chunks[index].Embedding = vectors[index]
 	}
 
-	if err := p.store.ReplaceDocumentChunks(ctx, document, chunks); err != nil {
+	refs, err := p.store.ReplaceDocumentChunks(ctx, document, plan)
+	if err != nil {
 		return fmt.Errorf("replace chunks: %w", err)
+	}
+	if err := p.syncSparseIndex(ctx, document, plan, refs); err != nil {
+		return fmt.Errorf("sync sparse index: %w", err)
 	}
 
 	return nil
 }
 
-func buildEmbeddingInput(filename string, chunk store.ChunkInput) string {
+func buildEmbeddingInput(title, filename string, chunk store.ChunkInput) string {
 	content := strings.TrimSpace(chunk.Content)
 	if content == "" {
 		return ""
 	}
 
 	lines := make([]string, 0, 4)
+	if documentTitle := strings.TrimSpace(title); documentTitle != "" {
+		lines = append(lines, "Title: "+documentTitle)
+	}
 	if name := strings.TrimSpace(filename); name != "" {
 		lines = append(lines, "Document: "+name)
 	}
@@ -142,4 +152,57 @@ func metadataInt(value any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func (p *Processor) syncSparseIndex(ctx context.Context, document store.DocumentForIngestion, plan store.ChunkPlan, refs store.StoredChunkRefs) error {
+	if p.sparse == nil || !p.sparse.Enabled() {
+		return nil
+	}
+
+	indexedChunks := make([]sparsesearch.IndexedChunk, 0, len(plan.Chunks))
+	for _, chunk := range plan.Chunks {
+		metadata := cloneMetadataMap(chunk.Metadata)
+		if parentID := refs.SectionIDs[chunk.ParentIndex]; parentID != "" {
+			metadata["parent_id"] = parentID
+		}
+		chunkID := refs.ChunkIDs[chunk.Index]
+		if chunkID == "" {
+			return fmt.Errorf("missing stored chunk id for chunk_index=%d", chunk.Index)
+		}
+
+		indexedChunks = append(indexedChunks, sparsesearch.IndexedChunk{
+			ChunkID:        chunkID,
+			OrgID:          document.OrgID,
+			DocumentID:     document.ID,
+			DocTitle:       document.Title,
+			DocFilename:    document.Filename,
+			ChunkIndex:     chunk.Index,
+			Content:        chunk.Content,
+			Section:        metadataString(metadata, "section"),
+			HeadingPath:    metadataString(metadata, "heading_path"),
+			ChunkKind:      metadataString(metadata, "chunk_kind"),
+			AllowedRoleIDs: document.AllowedRoleIDs,
+			Status:         "ready",
+			Metadata:       metadata,
+		})
+	}
+
+	return p.sparse.ReplaceDocument(ctx, document, indexedChunks)
+}
+
+func cloneMetadataMap(input map[string]any) map[string]any {
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
+}
+
+func metadataString(metadata map[string]any, key string) string {
+	value, ok := metadata[key]
+	if !ok {
+		return ""
+	}
+	text, _ := value.(string)
+	return strings.TrimSpace(text)
 }

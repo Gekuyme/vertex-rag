@@ -1,6 +1,10 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -24,6 +28,7 @@ type Manager struct {
 type Claims struct {
 	UserID    string    `json:"uid"`
 	OrgID     string    `json:"oid"`
+	SessionID string    `json:"sid,omitempty"`
 	TokenType TokenType `json:"typ"`
 	jwt.RegisteredClaims
 }
@@ -40,13 +45,13 @@ func NewManager(secret string, accessTTL, refreshTTL time.Duration) (*Manager, e
 	}, nil
 }
 
-func (m *Manager) NewTokenPair(userID, orgID string) (string, string, error) {
-	accessToken, err := m.newToken(userID, orgID, TokenTypeAccess, m.accessTTL)
+func (m *Manager) NewTokenPair(userID, orgID, sessionID string) (string, string, error) {
+	accessToken, err := m.newToken(userID, orgID, "", TokenTypeAccess, m.accessTTL)
 	if err != nil {
 		return "", "", fmt.Errorf("generate access token: %w", err)
 	}
 
-	refreshToken, err := m.newToken(userID, orgID, TokenTypeRefresh, m.refreshTTL)
+	refreshToken, err := m.newToken(userID, orgID, sessionID, TokenTypeRefresh, m.refreshTTL)
 	if err != nil {
 		return "", "", fmt.Errorf("generate refresh token: %w", err)
 	}
@@ -82,11 +87,41 @@ func (m *Manager) RefreshTTL() time.Duration {
 	return m.refreshTTL
 }
 
-func (m *Manager) newToken(userID, orgID string, tokenType TokenType, ttl time.Duration) (string, error) {
+func NewSessionID() (string, error) {
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return "", fmt.Errorf("generate session id: %w", err)
+	}
+
+	bytes[6] = (bytes[6] & 0x0f) | 0x40
+	bytes[8] = (bytes[8] & 0x3f) | 0x80
+
+	return fmt.Sprintf(
+		"%08x-%04x-%04x-%04x-%012x",
+		bytes[0:4],
+		bytes[4:6],
+		bytes[6:8],
+		bytes[8:10],
+		bytes[10:16],
+	), nil
+}
+
+func HashToken(rawToken string) string {
+	sum := sha256.Sum256([]byte(rawToken))
+	return hex.EncodeToString(sum[:])
+}
+
+func VerifyTokenHash(rawToken, expectedHash string) bool {
+	actualHash := HashToken(rawToken)
+	return subtle.ConstantTimeCompare([]byte(actualHash), []byte(expectedHash)) == 1
+}
+
+func (m *Manager) newToken(userID, orgID, sessionID string, tokenType TokenType, ttl time.Duration) (string, error) {
 	now := time.Now()
 	claims := Claims{
 		UserID:    userID,
 		OrgID:     orgID,
+		SessionID: sessionID,
 		TokenType: tokenType,
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),

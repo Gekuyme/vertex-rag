@@ -22,17 +22,36 @@ type Store struct {
 type DocumentForIngestion struct {
 	ID             string
 	OrgID          string
+	Title          string
 	StorageKey     string
 	MIME           string
 	Filename       string
 	AllowedRoleIDs []int64
 }
 
+type SectionInput struct {
+	Index       int
+	HeadingPath string
+	Content     string
+	Metadata    map[string]any
+}
+
 type ChunkInput struct {
-	Index     int
-	Content   string
-	Metadata  map[string]any
-	Embedding []float32
+	Index       int
+	ParentIndex int
+	Content     string
+	Metadata    map[string]any
+	Embedding   []float32
+}
+
+type ChunkPlan struct {
+	Sections []SectionInput
+	Chunks   []ChunkInput
+}
+
+type StoredChunkRefs struct {
+	SectionIDs map[int]string
+	ChunkIDs   map[int]string
 }
 
 func New(ctx context.Context, databaseURL string) (*Store, error) {
@@ -55,12 +74,13 @@ func (s *Store) Ping(ctx context.Context) error {
 func (s *Store) GetDocumentForIngestion(ctx context.Context, documentID string) (DocumentForIngestion, error) {
 	var document DocumentForIngestion
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, org_id, storage_key, mime, filename, allowed_role_ids
+		SELECT id, org_id, title, storage_key, mime, filename, allowed_role_ids
 		FROM documents
 		WHERE id = $1
 	`, documentID).Scan(
 		&document.ID,
 		&document.OrgID,
+		&document.Title,
 		&document.StorageKey,
 		&document.MIME,
 		&document.Filename,
@@ -93,28 +113,73 @@ func (s *Store) UpdateDocumentStatus(ctx context.Context, documentID, status str
 	return nil
 }
 
-func (s *Store) ReplaceDocumentChunks(ctx context.Context, document DocumentForIngestion, chunks []ChunkInput) error {
+func (s *Store) ReplaceDocumentChunks(ctx context.Context, document DocumentForIngestion, plan ChunkPlan) (StoredChunkRefs, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		return StoredChunkRefs{}, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
 	if _, err := tx.Exec(ctx, `DELETE FROM document_chunks WHERE document_id = $1`, document.ID); err != nil {
-		return fmt.Errorf("delete existing chunks: %w", err)
+		return StoredChunkRefs{}, fmt.Errorf("delete existing chunks: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM document_sections WHERE document_id = $1`, document.ID); err != nil {
+		return StoredChunkRefs{}, fmt.Errorf("delete existing sections: %w", err)
 	}
 
-	for _, chunk := range chunks {
+	sectionIDs := make(map[int]string, len(plan.Sections))
+	for _, section := range plan.Sections {
+		metadataJSON, err := json.Marshal(section.Metadata)
+		if err != nil {
+			return StoredChunkRefs{}, fmt.Errorf("marshal section metadata: %w", err)
+		}
+
+		var sectionID string
+		err = tx.QueryRow(ctx, `
+			INSERT INTO document_sections (
+				org_id,
+				document_id,
+				section_index,
+				heading_path,
+				content,
+				metadata,
+				allowed_role_ids,
+				created_at
+			)
+			VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+			RETURNING id
+		`,
+			document.OrgID,
+			document.ID,
+			section.Index,
+			section.HeadingPath,
+			section.Content,
+			metadataJSON,
+			document.AllowedRoleIDs,
+			time.Now(),
+		).Scan(&sectionID)
+		if err != nil {
+			return StoredChunkRefs{}, fmt.Errorf("insert section: %w", err)
+		}
+
+		sectionIDs[section.Index] = sectionID
+	}
+
+	chunkIDs := make(map[int]string, len(plan.Chunks))
+	for _, chunk := range plan.Chunks {
 		metadataJSON, err := json.Marshal(chunk.Metadata)
 		if err != nil {
-			return fmt.Errorf("marshal metadata: %w", err)
+			return StoredChunkRefs{}, fmt.Errorf("marshal metadata: %w", err)
 		}
 		embeddingVector := formatEmbeddingVector(chunk.Embedding)
+		parentSectionID := sectionIDs[chunk.ParentIndex]
 
-		_, err = tx.Exec(ctx, `
+		var chunkID string
+		err = tx.QueryRow(ctx, `
 			INSERT INTO document_chunks (
 				org_id,
 				document_id,
+				parent_section_id,
 				chunk_index,
 				content,
 				content_tsv,
@@ -128,32 +193,36 @@ func (s *Store) ReplaceDocumentChunks(ctx context.Context, document DocumentForI
 				$2,
 				$3,
 				$4,
-				to_tsvector('simple', $4),
-				NULLIF($5, '')::vector,
-				$6::jsonb,
-				$7,
-				$8
+				$5,
+				to_tsvector('simple', $5),
+				NULLIF($6, '')::vector,
+				$7::jsonb,
+				$8,
+				$9
 			)
+			RETURNING id
 		`,
 			document.OrgID,
 			document.ID,
+			parentSectionID,
 			chunk.Index,
 			chunk.Content,
 			embeddingVector,
 			metadataJSON,
 			document.AllowedRoleIDs,
 			time.Now(),
-		)
+		).Scan(&chunkID)
 		if err != nil {
-			return fmt.Errorf("insert chunk: %w", err)
+			return StoredChunkRefs{}, fmt.Errorf("insert chunk: %w", err)
 		}
+		chunkIDs[chunk.Index] = chunkID
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit tx: %w", err)
+		return StoredChunkRefs{}, fmt.Errorf("commit tx: %w", err)
 	}
 
-	return nil
+	return StoredChunkRefs{SectionIDs: sectionIDs, ChunkIDs: chunkIDs}, nil
 }
 
 func (s *Store) IncrementOrganizationKBVersion(ctx context.Context, orgID string) error {

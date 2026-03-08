@@ -1,11 +1,13 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -27,11 +29,20 @@ type openAICompletionRequest struct {
 	Messages    []Message `json:"messages"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Temperature float64   `json:"temperature,omitempty"`
+	Stream      bool      `json:"stream,omitempty"`
 }
 
 type openAICompletionResponse struct {
 	Choices []struct {
 		Message Message `json:"message"`
+	} `json:"choices"`
+}
+
+type openAIStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
 	} `json:"choices"`
 }
 
@@ -83,6 +94,7 @@ func (p *openAIProvider) Complete(ctx context.Context, request CompletionRequest
 		Messages:    request.Messages,
 		MaxTokens:   request.MaxTokens,
 		Temperature: request.Temperature,
+		Stream:      false,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal openai completion request: %w", err)
@@ -127,11 +139,103 @@ func (p *openAIProvider) StreamComplete(
 	request CompletionRequest,
 	onDelta func(delta string),
 ) (string, error) {
-	answer, err := p.Complete(ctx, request)
+	if onDelta == nil {
+		onDelta = func(string) {}
+	}
+
+	model := strings.TrimSpace(request.Model)
+	if model == "" {
+		switch strings.ToLower(strings.TrimSpace(request.Mode)) {
+		case "strict":
+			model = p.modelStrict
+		case "unstrict":
+			model = p.modelUnstrict
+		}
+	}
+	if model == "" {
+		model = p.model
+	}
+
+	body, err := json.Marshal(openAICompletionRequest{
+		Model:       model,
+		Messages:    request.Messages,
+		MaxTokens:   request.MaxTokens,
+		Temperature: request.Temperature,
+		Stream:      true,
+	})
 	if err != nil {
 		return "", err
 	}
 
-	emitChunks(answer, 100, onDelta)
+	response, err := retryRequest(ctx, p.maxRetries, p.retryBackoff, func() (*http.Response, error) {
+		httpRequest, createErr := http.NewRequestWithContext(
+			ctx,
+			http.MethodPost,
+			p.baseURL+"/chat/completions",
+			bytes.NewReader(body),
+		)
+		if createErr != nil {
+			return nil, fmt.Errorf("create openai stream request: %w", createErr)
+		}
+		httpRequest.Header.Set("Authorization", "Bearer "+p.apiKey)
+		httpRequest.Header.Set("Content-Type", "application/json")
+		httpRequest.Header.Set("Accept", "text/event-stream")
+		return p.httpClient.Do(httpRequest)
+	})
+	if err != nil {
+		return "", fmt.Errorf("openai stream request failed: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= 300 {
+		return "", fmt.Errorf("openai stream returned status %d", response.StatusCode)
+	}
+
+	var builder strings.Builder
+	scanner := bufio.NewScanner(response.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			break
+		}
+
+		var chunk openAIStreamChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			return "", fmt.Errorf("decode openai stream chunk: %w", err)
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+
+		delta := chunk.Choices[0].Delta.Content
+		if delta == "" {
+			continue
+		}
+
+		onDelta(delta)
+		builder.WriteString(delta)
+	}
+
+	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("read openai stream: %w", err)
+	}
+
+	answer := strings.TrimSpace(builder.String())
+	if answer == "" {
+		return "", errors.New("openai stream returned empty content")
+	}
 	return answer, nil
 }

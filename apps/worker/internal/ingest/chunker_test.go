@@ -26,18 +26,21 @@ func TestNormalizeText_RemovesSoftHyphenArtifacts(t *testing.T) {
 
 func TestChunkDocumentText_PDFAddsPageMetadata(t *testing.T) {
 	raw := "Page1 token\fPage2 token"
-	chunks := chunkDocumentText(raw, "application/pdf", "test.pdf")
-	if len(chunks) != 1 {
-		t.Fatalf("expected a single chunk, got %d", len(chunks))
+	plan := chunkDocumentText(raw, "application/pdf", "test.pdf")
+	if len(plan.Chunks) != 1 {
+		t.Fatalf("expected a single chunk, got %d", len(plan.Chunks))
 	}
 
-	page, ok := chunks[0].Metadata["page"].(int)
+	page, ok := plan.Chunks[0].Metadata["page"].(int)
 	if !ok || page != 1 {
-		t.Fatalf("expected page metadata=1, got %#v", chunks[0].Metadata["page"])
+		t.Fatalf("expected page metadata=1, got %#v", plan.Chunks[0].Metadata["page"])
 	}
-	pageEnd, ok := chunks[0].Metadata["page_end"].(int)
+	pageEnd, ok := plan.Chunks[0].Metadata["page_end"].(int)
 	if !ok || pageEnd != 2 {
-		t.Fatalf("expected page_end metadata=2, got %#v", chunks[0].Metadata["page_end"])
+		t.Fatalf("expected page_end metadata=2, got %#v", plan.Chunks[0].Metadata["page_end"])
+	}
+	if len(plan.Sections) != 1 {
+		t.Fatalf("expected a single parent section, got %d", len(plan.Sections))
 	}
 }
 

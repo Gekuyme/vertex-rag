@@ -1,11 +1,13 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -50,6 +52,8 @@ type geminiGenerateContentResponse struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
 }
+
+type geminiStreamChunk = geminiGenerateContentResponse
 
 func newGeminiProvider(
 	baseURL,
@@ -163,13 +167,116 @@ func (p *geminiProvider) StreamComplete(
 	request CompletionRequest,
 	onDelta func(delta string),
 ) (string, error) {
-	answer, err := p.Complete(ctx, request)
+	if onDelta == nil {
+		onDelta = func(string) {}
+	}
+
+	model := strings.TrimSpace(request.Model)
+	if model == "" {
+		model = p.modelForMode(request.Mode)
+	}
+	if model == "" {
+		return "", errors.New("gemini model is empty")
+	}
+
+	systemInstruction, contents := geminiContentsFromMessages(request.Messages)
+	if len(contents) == 0 {
+		return "", errors.New("gemini request has no contents")
+	}
+
+	body, err := json.Marshal(geminiGenerateContentRequest{
+		SystemInstruction: systemInstruction,
+		Contents:          contents,
+		GenerationConfig: geminiGenerationConfig{
+			Temperature:     request.Temperature,
+			MaxOutputTokens: request.MaxTokens,
+		},
+	})
 	if err != nil {
 		return "", err
 	}
 
-	emitChunks(answer, 100, onDelta)
+	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse&key=%s", p.baseURL, model, p.apiKey)
+	response, err := retryRequest(ctx, p.maxRetries, p.retryBackoff, func() (*http.Response, error) {
+		httpRequest, createErr := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if createErr != nil {
+			return nil, fmt.Errorf("create gemini stream request: %w", createErr)
+		}
+		httpRequest.Header.Set("Content-Type", "application/json")
+		httpRequest.Header.Set("Accept", "text/event-stream")
+		return p.httpClient.Do(httpRequest)
+	})
+	if err != nil {
+		return "", fmt.Errorf("gemini stream request failed: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= 300 {
+		var parsed geminiGenerateContentResponse
+		if err := json.NewDecoder(response.Body).Decode(&parsed); err == nil && parsed.Error != nil && strings.TrimSpace(parsed.Error.Message) != "" {
+			return "", fmt.Errorf("gemini returned status %d: %s", response.StatusCode, strings.TrimSpace(parsed.Error.Message))
+		}
+		return "", fmt.Errorf("gemini returned status %d", response.StatusCode)
+	}
+
+	var builder strings.Builder
+	scanner := bufio.NewScanner(response.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" {
+			continue
+		}
+
+		var chunk geminiStreamChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			return "", fmt.Errorf("decode gemini stream chunk: %w", err)
+		}
+		if chunk.Error != nil && strings.TrimSpace(chunk.Error.Message) != "" {
+			return "", errors.New(strings.TrimSpace(chunk.Error.Message))
+		}
+		if len(chunk.Candidates) == 0 {
+			continue
+		}
+
+		delta := geminiRawTextFromContent(chunk.Candidates[0].Content)
+		if delta == "" {
+			continue
+		}
+
+		onDelta(delta)
+		builder.WriteString(delta)
+	}
+
+	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("read gemini stream: %w", err)
+	}
+
+	answer := strings.TrimSpace(builder.String())
+	if answer == "" {
+		return "", errors.New("gemini stream returned empty content")
+	}
 	return answer, nil
+}
+
+func geminiRawTextFromContent(content geminiContent) string {
+	var builder strings.Builder
+	for _, part := range content.Parts {
+		if part.Text == "" {
+			continue
+		}
+		builder.WriteString(part.Text)
+	}
+	return builder.String()
 }
 
 func geminiContentsFromMessages(messages []Message) (*geminiContent, []geminiContent) {

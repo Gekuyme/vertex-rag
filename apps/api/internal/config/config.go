@@ -27,6 +27,9 @@ type Config struct {
 	Embeddings     EmbeddingConfig
 	LLM            LLMConfig
 	Search         SearchConfig
+	SparseSearch   SparseSearchConfig
+	Reranker       RerankerConfig
+	Retrieval      RetrievalConfig
 	Features       FeatureConfig
 }
 
@@ -64,11 +67,37 @@ type FeatureConfig struct {
 	UnstrictLegacyToggleWebSearch bool
 }
 
+type SparseSearchConfig struct {
+	Provider   string
+	URL        string
+	IndexName  string
+	Timeout    time.Duration
+	MaxResults int
+}
+
+type RerankerConfig struct {
+	URL        string
+	Model      string
+	Timeout    time.Duration
+	MaxResults int
+	Enabled    bool
+}
+
+type RetrievalConfig struct {
+	PipelineVersion       string
+	QueryRewriteEnabled   bool
+	QueryExpansionEnabled bool
+	HyDEEnabled           bool
+}
+
 type EmbeddingConfig struct {
 	Provider      string
 	OpenAIKey     string
 	OpenAIBaseURL string
 	OpenAIModel   string
+	GeminiKey     string
+	GeminiBaseURL string
+	GeminiModel   string
 	OllamaBaseURL string
 	OllamaModel   string
 }
@@ -121,6 +150,14 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("parse SEARCH_HTTP_TIMEOUT: %w", err)
 	}
+	sparseTimeout, err := parseDurationWithDefault("SPARSE_SEARCH_TIMEOUT", "4s")
+	if err != nil {
+		return Config{}, fmt.Errorf("parse SPARSE_SEARCH_TIMEOUT: %w", err)
+	}
+	rerankerTimeout, err := parseDurationWithDefault("RERANKER_TIMEOUT", "8s")
+	if err != nil {
+		return Config{}, fmt.Errorf("parse RERANKER_TIMEOUT: %w", err)
+	}
 	llmHTTPTimeout, err := parseDurationWithDefault("LLM_HTTP_TIMEOUT", "60s")
 	if err != nil {
 		return Config{}, fmt.Errorf("parse LLM_HTTP_TIMEOUT: %w", err)
@@ -169,10 +206,13 @@ func Load() (Config, error) {
 			UseSSL:    parseBoolWithDefault("S3_USE_SSL", false),
 		},
 		Embeddings: EmbeddingConfig{
-			Provider:      envOrDefault("EMBED_PROVIDER", "local"),
+			Provider:      envOrDefault("EMBED_PROVIDER", "gemini"),
 			OpenAIKey:     envOrDefault("OPENAI_API_KEY", ""),
 			OpenAIBaseURL: envOrDefault("OPENAI_BASE_URL", "https://api.openai.com/v1"),
 			OpenAIModel:   envOrDefault("EMBED_MODEL_OPENAI", "text-embedding-3-small"),
+			GeminiKey:     envOrDefault("GEMINI_API_KEY", ""),
+			GeminiBaseURL: envOrDefault("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
+			GeminiModel:   envOrDefault("EMBED_MODEL_GEMINI", "gemini-embedding-001"),
 			OllamaBaseURL: envOrDefault("OLLAMA_BASE_URL", "http://ollama:11434"),
 			OllamaModel:   envOrDefault("EMBED_MODEL_OLLAMA", "nomic-embed-text"),
 		},
@@ -209,6 +249,26 @@ func Load() (Config, error) {
 			APIKey:     envOrDefault("SEARCH_API_KEY", ""),
 			MaxResults: parseIntWithDefault("SEARCH_MAX_RESULTS", 5),
 			Timeout:    searchTimeout,
+		},
+		SparseSearch: SparseSearchConfig{
+			Provider:   envOrDefault("SPARSE_SEARCH_PROVIDER", "opensearch"),
+			URL:        envOrDefault("OPENSEARCH_URL", "http://opensearch:9200"),
+			IndexName:  envOrDefault("OPENSEARCH_INDEX", "vertex-document-chunks"),
+			Timeout:    sparseTimeout,
+			MaxResults: parseIntWithDefault("SPARSE_SEARCH_MAX_RESULTS", 50),
+		},
+		Reranker: RerankerConfig{
+			URL:        envOrDefault("RERANKER_URL", ""),
+			Model:      envOrDefault("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
+			Timeout:    rerankerTimeout,
+			MaxResults: parseIntWithDefault("RERANKER_MAX_RESULTS", 30),
+			Enabled:    parseBoolWithDefault("RERANKER_ENABLED", true),
+		},
+		Retrieval: RetrievalConfig{
+			PipelineVersion:       strings.ToLower(strings.TrimSpace(envOrDefault("RETRIEVAL_PIPELINE_VERSION", "v2"))),
+			QueryRewriteEnabled:   parseBoolWithDefault("QUERY_REWRITE_ENABLED", true),
+			QueryExpansionEnabled: parseBoolWithDefault("QUERY_EXPANSION_ENABLED", true),
+			HyDEEnabled:           parseBoolWithDefault("HYDE_ENABLED", false),
 		},
 		Features: FeatureConfig{
 			UnstrictLegacyToggleWebSearch: parseBoolWithDefault("UNSTRICT_LEGACY_TOGGLE_WEB_SEARCH", true),

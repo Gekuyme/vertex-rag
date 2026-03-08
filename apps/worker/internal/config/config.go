@@ -4,14 +4,16 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
-	WorkerAddr  string
-	DatabaseURL string
-	Redis       RedisConfig
-	S3          S3Config
-	Embeddings  EmbeddingConfig
+	WorkerAddr   string
+	DatabaseURL  string
+	Redis        RedisConfig
+	S3           S3Config
+	Embeddings   EmbeddingConfig
+	SparseSearch SparseSearchConfig
 }
 
 type RedisConfig struct {
@@ -34,11 +36,24 @@ type EmbeddingConfig struct {
 	OpenAIKey     string
 	OpenAIBaseURL string
 	OpenAIModel   string
+	GeminiKey     string
+	GeminiBaseURL string
+	GeminiModel   string
 	OllamaBaseURL string
 	OllamaModel   string
 }
 
+type SparseSearchConfig struct {
+	Provider  string
+	URL       string
+	IndexName string
+	Timeout   time.Duration
+	Enabled   bool
+}
+
 func Load() Config {
+	sparseTimeout := parseDurationWithDefault("SPARSE_SEARCH_TIMEOUT", 4*time.Second)
+
 	return Config{
 		WorkerAddr:  ":" + envOrDefault("WORKER_PORT", "8082"),
 		DatabaseURL: envOrDefault("DATABASE_URL", "postgres://vertex:vertex@localhost:5432/vertex_rag?sslmode=disable"),
@@ -56,12 +71,22 @@ func Load() Config {
 			UseSSL:    parseBoolWithDefault("S3_USE_SSL", false),
 		},
 		Embeddings: EmbeddingConfig{
-			Provider:      envOrDefault("EMBED_PROVIDER", "local"),
+			Provider:      envOrDefault("EMBED_PROVIDER", "gemini"),
 			OpenAIKey:     envOrDefault("OPENAI_API_KEY", ""),
 			OpenAIBaseURL: envOrDefault("OPENAI_BASE_URL", "https://api.openai.com/v1"),
 			OpenAIModel:   envOrDefault("EMBED_MODEL_OPENAI", "text-embedding-3-small"),
+			GeminiKey:     envOrDefault("GEMINI_API_KEY", ""),
+			GeminiBaseURL: envOrDefault("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
+			GeminiModel:   envOrDefault("EMBED_MODEL_GEMINI", "gemini-embedding-001"),
 			OllamaBaseURL: envOrDefault("OLLAMA_BASE_URL", "http://ollama:11434"),
 			OllamaModel:   envOrDefault("EMBED_MODEL_OLLAMA", "nomic-embed-text"),
+		},
+		SparseSearch: SparseSearchConfig{
+			Provider:  envOrDefault("SPARSE_SEARCH_PROVIDER", "opensearch"),
+			URL:       envOrDefault("OPENSEARCH_URL", "http://opensearch:9200"),
+			IndexName: envOrDefault("OPENSEARCH_INDEX", "vertex-document-chunks"),
+			Timeout:   sparseTimeout,
+			Enabled:   parseBoolWithDefault("SPARSE_INDEX_ENABLED", true),
 		},
 	}
 }
@@ -97,6 +122,20 @@ func parseIntWithDefault(key string, fallback int) int {
 	}
 
 	parsedValue, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+
+	return parsedValue
+}
+
+func parseDurationWithDefault(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+
+	parsedValue, err := time.ParseDuration(value)
 	if err != nil {
 		return fallback
 	}

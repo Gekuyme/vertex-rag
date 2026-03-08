@@ -19,6 +19,8 @@ import (
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/httpserver"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/llm"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/queue"
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/reranker"
+	"github.com/Gekuyme/vertex-rag/apps/api/internal/sparsesearch"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/storage"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/store"
 	"github.com/Gekuyme/vertex-rag/apps/api/internal/websearch"
@@ -112,7 +114,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("init embeddings provider: %v", err)
 	}
-	llmProvider, err := llm.NewProvider(cfg.LLM)
+	llmRuntime, err := llm.NewRuntime(cfg.LLM)
 	if err != nil {
 		log.Fatalf("init llm provider: %v", err)
 	}
@@ -120,6 +122,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("init web search client: %v", err)
 	}
+	sparseClient := sparsesearch.NewClient(cfg.SparseSearch)
+	rerankerClient := reranker.NewClient(cfg.Reranker)
 
 	server := httpserver.New(
 		cfg.APIAddr,
@@ -129,8 +133,10 @@ func main() {
 		queueClient,
 		cacheClient,
 		embeddingProvider,
-		llmProvider,
+		llmRuntime,
 		searchClient,
+		sparseClient,
+		rerankerClient,
 		cfg.CORSOrigins,
 		cfg.CookieSecure,
 		parseSameSiteMode(cfg.CookieSameSite),
@@ -138,6 +144,10 @@ func main() {
 		cfg.RateLimitBurst,
 		cfg.LLM.MaxContextChars,
 		cfg.Features.UnstrictLegacyToggleWebSearch,
+		cfg.Retrieval.PipelineVersion,
+		cfg.Retrieval.QueryRewriteEnabled,
+		cfg.Retrieval.QueryExpansionEnabled,
+		cfg.Retrieval.HyDEEnabled,
 	)
 
 	errCh := make(chan error, 1)

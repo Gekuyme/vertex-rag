@@ -236,7 +236,7 @@ func TestBuildStrictHeuristicAnswer_UsesTopChunkBullets(t *testing.T) {
 		},
 	}
 
-	answer := buildStrictHeuristicAnswer(retrieved)
+	answer := buildStrictHeuristicAnswer(retrieved, responseLanguageRU)
 	if answer == "" {
 		t.Fatalf("expected heuristic answer")
 	}

@@ -17,6 +17,11 @@ func NewProvider(cfg config.EmbeddingConfig) (Provider, error) {
 			return nil, errors.New("OPENAI_API_KEY is required for openai embeddings")
 		}
 		return newOpenAIProvider(cfg.OpenAIBaseURL, cfg.OpenAIKey, cfg.OpenAIModel), nil
+	case "gemini":
+		if strings.TrimSpace(cfg.GeminiKey) == "" {
+			return nil, errors.New("GEMINI_API_KEY is required for gemini embeddings")
+		}
+		return newGeminiProvider(cfg.GeminiBaseURL, cfg.GeminiKey, cfg.GeminiModel), nil
 	case "ollama":
 		return newOllamaProvider(cfg.OllamaBaseURL, cfg.OllamaModel), nil
 	default:

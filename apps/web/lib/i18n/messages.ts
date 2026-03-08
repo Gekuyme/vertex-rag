@@ -72,7 +72,8 @@ const dictionaries = {
       streamDrafting: "Готовит ответ",
       streamFinalizing: "Финализирует ответ",
       streamThinkingDeep: "Думает глубже",
-      streamThinking: "Думает"
+      streamThinking: "Думает",
+      workedFor: (value: string) => `Отвечал ${value}`
     },
     responseProfiles: {
       fast: "Fast",
@@ -319,7 +320,8 @@ const dictionaries = {
       streamDrafting: "Drafting the answer",
       streamFinalizing: "Finalizing the answer",
       streamThinkingDeep: "Thinking more deeply",
-      streamThinking: "Thinking"
+      streamThinking: "Thinking",
+      workedFor: (value: string) => `Worked for ${value}`
     },
     responseProfiles: {
       fast: "Fast",

@@ -21,16 +21,25 @@ type RetrievalOptions struct {
 }
 
 type RetrievalChunk struct {
-	ChunkID     string
-	DocumentID  string
-	DocTitle    string
-	DocFilename string
-	ChunkIndex  int
-	Content     string
-	Metadata    map[string]any
-	VectorScore float64
-	TextScore   float64
-	Score       float64
+	ChunkID         string
+	DocumentID      string
+	DocTitle        string
+	DocFilename     string
+	ChunkIndex      int
+	Content         string
+	Metadata        map[string]any
+	ParentSectionID string
+	ParentContent   string
+	ParentMetadata  map[string]any
+	VectorScore     float64
+	TextScore       float64
+	Score           float64
+	DenseRank       int
+	SparseRank      int
+	RRFScore        float64
+	RerankScore     float64
+	QueryVariant    string
+	RetrieversUsed  []string
 }
 
 func (s *Store) RetrieveChunks(ctx context.Context, opts RetrievalOptions) ([]RetrievalChunk, error) {

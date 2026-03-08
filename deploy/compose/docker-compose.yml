@@ -22,9 +22,10 @@ services:
       CACHE_RETRIEVAL_TTL: ${CACHE_RETRIEVAL_TTL:-10m}
       CACHE_ANSWER_TTL: ${CACHE_ANSWER_TTL:-10m}
       LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
-      EMBED_PROVIDER: ${EMBED_PROVIDER:-local}
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-gemini}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      EMBED_MODEL_GEMINI: ${EMBED_MODEL_GEMINI:-gemini-embedding-001}
       LLM_MODEL_OPENAI: ${LLM_MODEL_OPENAI:-gpt-4o-mini}
       LLM_MODEL_OPENAI_STRICT: ${LLM_MODEL_OPENAI_STRICT:-}
       LLM_MODEL_OPENAI_UNSTRICT: ${LLM_MODEL_OPENAI_UNSTRICT:-}
@@ -49,6 +50,20 @@ services:
       SEARCH_API_KEY: ${SEARCH_API_KEY:-}
       SEARCH_MAX_RESULTS: ${SEARCH_MAX_RESULTS:-5}
       SEARCH_HTTP_TIMEOUT: ${SEARCH_HTTP_TIMEOUT:-6s}
+      RETRIEVAL_PIPELINE_VERSION: ${RETRIEVAL_PIPELINE_VERSION:-v2}
+      QUERY_REWRITE_ENABLED: ${QUERY_REWRITE_ENABLED:-true}
+      QUERY_EXPANSION_ENABLED: ${QUERY_EXPANSION_ENABLED:-true}
+      HYDE_ENABLED: ${HYDE_ENABLED:-false}
+      SPARSE_SEARCH_PROVIDER: ${SPARSE_SEARCH_PROVIDER:-opensearch}
+      OPENSEARCH_URL: ${OPENSEARCH_URL:-http://opensearch:9200}
+      OPENSEARCH_INDEX: ${OPENSEARCH_INDEX:-vertex-document-chunks}
+      SPARSE_SEARCH_TIMEOUT: ${SPARSE_SEARCH_TIMEOUT:-4s}
+      SPARSE_SEARCH_MAX_RESULTS: ${SPARSE_SEARCH_MAX_RESULTS:-50}
+      RERANKER_ENABLED: ${RERANKER_ENABLED:-true}
+      RERANKER_URL: ${RERANKER_URL:-http://reranker:80}
+      RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      RERANKER_TIMEOUT: ${RERANKER_TIMEOUT:-8s}
+      RERANKER_MAX_RESULTS: ${RERANKER_MAX_RESULTS:-30}
       UNSTRICT_LEGACY_TOGGLE_WEB_SEARCH: ${UNSTRICT_LEGACY_TOGGLE_WEB_SEARCH:-true}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -67,9 +82,10 @@ services:
       REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       REDIS_DB: ${REDIS_DB:-0}
-      EMBED_PROVIDER: ${EMBED_PROVIDER:-local}
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-gemini}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      EMBED_MODEL_GEMINI: ${EMBED_MODEL_GEMINI:-gemini-embedding-001}
       EMBED_MODEL_OPENAI: ${EMBED_MODEL_OPENAI:-text-embedding-3-small}
       EMBED_MODEL_OLLAMA: ${EMBED_MODEL_OLLAMA:-nomic-embed-text}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
@@ -79,12 +95,18 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
       S3_USE_SSL: ${S3_USE_SSL:-false}
+      SPARSE_SEARCH_PROVIDER: ${SPARSE_SEARCH_PROVIDER:-opensearch}
+      OPENSEARCH_URL: ${OPENSEARCH_URL:-http://opensearch:9200}
+      OPENSEARCH_INDEX: ${OPENSEARCH_INDEX:-vertex-document-chunks}
+      SPARSE_SEARCH_TIMEOUT: ${SPARSE_SEARCH_TIMEOUT:-4s}
+      SPARSE_INDEX_ENABLED: ${SPARSE_INDEX_ENABLED:-true}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       - postgres
       - redis
       - minio
+      - opensearch
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -116,6 +138,30 @@ services:
     volumes:
       - minio_data:/data
 
+  opensearch:
+    image: opensearchproject/opensearch:2.19.1
+    environment:
+      discovery.type: single-node
+      plugins.security.disabled: "true"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-ChangeMe123!}
+      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
+    ports:
+      - "9200:9200"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+
+  reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    command:
+      - --model-id
+      - ${RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      - --port
+      - "80"
+    ports:
+      - "8083:80"
+    profiles:
+      - local-llm
+
   ollama:
     image: ollama/ollama:latest
     ports:
@@ -129,4 +175,5 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
+  opensearch_data:
   ollama_data:

@@ -16,6 +16,7 @@ import (
 	"github.com/Gekuyme/vertex-rag/apps/worker/internal/httpserver"
 	"github.com/Gekuyme/vertex-rag/apps/worker/internal/ingest"
 	"github.com/Gekuyme/vertex-rag/apps/worker/internal/queue"
+	"github.com/Gekuyme/vertex-rag/apps/worker/internal/sparsesearch"
 	"github.com/Gekuyme/vertex-rag/apps/worker/internal/storage"
 	"github.com/Gekuyme/vertex-rag/apps/worker/internal/store"
 	"github.com/hibiken/asynq"
@@ -76,9 +77,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("init embeddings provider: %v", err)
 	}
+	sparseClient := sparsesearch.NewClient(cfg.SparseSearch)
 
 	httpSrv := httpserver.New(cfg.WorkerAddr)
-	processor := ingest.NewProcessor(dbStore, storageClient, embeddingProvider)
+	processor := ingest.NewProcessor(dbStore, storageClient, embeddingProvider, sparseClient)
 
 	asynqServer := asynq.NewServer(
 		asynq.RedisClientOpt{

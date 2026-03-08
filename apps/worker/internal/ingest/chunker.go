@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	defaultChunkSize    = 1200
-	defaultChunkOverlap = 180
+	defaultParentSectionSize = 1600
+	defaultChildChunkSize    = 320
+	defaultChildOverlap      = 60
 )
 
 type normalizeOptions struct {
@@ -121,7 +122,16 @@ type pageBoundary struct {
 	End   int // rune offset (exclusive) in normalizedText
 }
 
-func chunkDocumentText(rawText, mime, filename string) []store.ChunkInput {
+type paragraphSpan struct {
+	Start       int
+	End         int
+	Text        string
+	HeadingPath string
+	StartPage   int
+	EndPage     int
+}
+
+func chunkDocumentText(rawText, mime, filename string) store.ChunkPlan {
 	lowerMIME := strings.ToLower(strings.TrimSpace(mime))
 	extension := strings.ToLower(filepathExt(filename))
 
@@ -131,20 +141,172 @@ func chunkDocumentText(rawText, mime, filename string) []store.ChunkInput {
 
 	normalizedText, boundaries := normalizeWithPageBoundaries(rawText, isPDF, normalizeOpts)
 	if strings.TrimSpace(normalizedText) == "" {
-		return nil
+		return store.ChunkPlan{}
 	}
 
-	runes := []rune(normalizedText)
 	var headings []headingBoundary
 	if isMarkdown {
 		headings = extractMarkdownHeadings(normalizedText)
 	}
+
+	paragraphs := extractParagraphSpans(normalizedText, headings, boundaries)
+	if len(paragraphs) == 0 {
+		return store.ChunkPlan{}
+	}
+
+	plan := store.ChunkPlan{
+		Sections: make([]store.SectionInput, 0),
+		Chunks:   make([]store.ChunkInput, 0),
+	}
+
+	currentSection := make([]paragraphSpan, 0)
+	appendSection := func() {
+		if len(currentSection) == 0 {
+			return
+		}
+
+		sectionIndex := len(plan.Sections)
+		section := buildSectionInput(sectionIndex, currentSection)
+		plan.Sections = append(plan.Sections, section)
+		childChunks := buildChildChunksForSection(section, currentSection)
+		for index := range childChunks {
+			childChunks[index].Index = len(plan.Chunks) + index
+		}
+		plan.Chunks = append(plan.Chunks, childChunks...)
+		currentSection = currentSection[:0]
+	}
+
+	currentHeading := paragraphs[0].HeadingPath
+	currentSize := 0
+	for _, paragraph := range paragraphs {
+		paragraphLen := len([]rune(paragraph.Text))
+		headingChanged := currentHeading != "" && paragraph.HeadingPath != "" && paragraph.HeadingPath != currentHeading
+		if len(currentSection) > 0 && (headingChanged || (currentSize >= 900 && currentSize+paragraphLen > defaultParentSectionSize)) {
+			appendSection()
+			currentHeading = paragraph.HeadingPath
+			currentSize = 0
+		}
+
+		if currentHeading == "" {
+			currentHeading = paragraph.HeadingPath
+		}
+		currentSection = append(currentSection, paragraph)
+		currentSize += paragraphLen
+	}
+	appendSection()
+
+	return plan
+}
+
+func filepathExt(filename string) string {
+	if filename == "" {
+		return ""
+	}
+	if idx := strings.LastIndexByte(filename, '.'); idx >= 0 {
+		return filename[idx:]
+	}
+	return ""
+}
+
+func extractParagraphSpans(text string, headings []headingBoundary, boundaries []pageBoundary) []paragraphSpan {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+
+	runes := []rune(text)
+	out := make([]paragraphSpan, 0)
+	start := 0
+	for start < len(runes) {
+		for start < len(runes) && unicode.IsSpace(runes[start]) {
+			start++
+		}
+		if start >= len(runes) {
+			break
+		}
+
+		end := start
+		for end < len(runes) {
+			if end+1 < len(runes) && runes[end] == '\n' && runes[end+1] == '\n' {
+				break
+			}
+			end++
+		}
+		if end <= start {
+			break
+		}
+
+		paragraphText := strings.TrimSpace(string(runes[start:end]))
+		if paragraphText != "" {
+			startPage, endPage := resolvePages(boundaries, start, end)
+			out = append(out, paragraphSpan{
+				Start:       start,
+				End:         end,
+				Text:        paragraphText,
+				HeadingPath: markdownHeadingForOffset(headings, start),
+				StartPage:   startPage,
+				EndPage:     endPage,
+			})
+		}
+
+		start = end + 2
+	}
+
+	return out
+}
+
+func buildSectionInput(index int, paragraphs []paragraphSpan) store.SectionInput {
+	start := paragraphs[0].Start
+	end := paragraphs[len(paragraphs)-1].End
+	startPage := paragraphs[0].StartPage
+	endPage := paragraphs[len(paragraphs)-1].EndPage
+	headingPath := strings.TrimSpace(paragraphs[len(paragraphs)-1].HeadingPath)
+	if headingPath == "" {
+		headingPath = strings.TrimSpace(paragraphs[0].HeadingPath)
+	}
+
+	lines := make([]string, 0, len(paragraphs))
+	for _, paragraph := range paragraphs {
+		lines = append(lines, paragraph.Text)
+	}
+	content := strings.TrimSpace(strings.Join(lines, "\n\n"))
+	metadata := map[string]any{
+		"char_start": start,
+		"char_end":   end,
+	}
+	if headingPath != "" {
+		metadata["section"] = headingPath
+		metadata["heading_path"] = headingPath
+	}
+	if startPage > 0 {
+		metadata["page"] = startPage
+	}
+	if endPage > 0 && endPage != startPage {
+		metadata["page_end"] = endPage
+	}
+
+	return store.SectionInput{
+		Index:       index,
+		HeadingPath: headingPath,
+		Content:     content,
+		Metadata:    metadata,
+	}
+}
+
+func buildChildChunksForSection(section store.SectionInput, paragraphs []paragraphSpan) []store.ChunkInput {
+	if strings.TrimSpace(section.Content) == "" {
+		return nil
+	}
+
+	runes := []rune(section.Content)
+	baseStart, _ := metadataIntFromMap(section.Metadata, "char_start")
+	basePage, _ := metadataIntFromMap(section.Metadata, "page")
+	basePageEnd, _ := metadataIntFromMap(section.Metadata, "page_end")
+	headingPath, _ := section.Metadata["heading_path"].(string)
+
 	chunks := make([]store.ChunkInput, 0)
 	start := snapStart(runes, 0)
-	index := 0
-
 	for start < len(runes) {
-		end := start + defaultChunkSize
+		end := start + defaultChildChunkSize
 		if end > len(runes) {
 			end = len(runes)
 		}
@@ -157,44 +319,37 @@ func chunkDocumentText(rawText, mime, filename string) []store.ChunkInput {
 			break
 		}
 
-		chunkRunes := runes[start:end]
-		chunkContent := strings.TrimSpace(string(chunkRunes))
-		if chunkContent != "" {
-			chunkKind := classifyChunkKind(chunkContent)
+		content := strings.TrimSpace(string(runes[start:end]))
+		if content != "" {
 			metadata := map[string]any{
-				"char_start": start,
-				"char_end":   end,
-				"chunk_kind": chunkKind,
+				"char_start":   baseStart + start,
+				"char_end":     baseStart + end,
+				"chunk_kind":   classifyChunkKind(content),
+				"parent_index": section.Index,
 			}
-
-			if len(boundaries) > 0 {
-				startPage, endPage := resolvePages(boundaries, start, end)
-				if startPage > 0 {
-					metadata["page"] = startPage
-				}
-				if endPage > 0 && endPage != startPage {
-					metadata["page_end"] = endPage
-				}
+			if headingPath != "" {
+				metadata["section"] = headingPath
+				metadata["heading_path"] = headingPath
 			}
-			if len(headings) > 0 {
-				if section := markdownHeadingForOffset(headings, start); section != "" {
-					metadata["section"] = section
-				}
+			if basePage > 0 {
+				metadata["page"] = basePage
+			}
+			if basePageEnd > 0 && basePageEnd != basePage {
+				metadata["page_end"] = basePageEnd
 			}
 
 			chunks = append(chunks, store.ChunkInput{
-				Index:    index,
-				Content:  chunkContent,
-				Metadata: metadata,
+				ParentIndex: section.Index,
+				Content:     content,
+				Metadata:    metadata,
 			})
-			index++
 		}
 
 		if end == len(runes) {
 			break
 		}
 
-		nextStart := end - defaultChunkOverlap
+		nextStart := end - defaultChildOverlap
 		if nextStart <= start {
 			nextStart = end
 		}
@@ -204,14 +359,22 @@ func chunkDocumentText(rawText, mime, filename string) []store.ChunkInput {
 	return chunks
 }
 
-func filepathExt(filename string) string {
-	if filename == "" {
-		return ""
+func metadataIntFromMap(metadata map[string]any, key string) (int, bool) {
+	value, ok := metadata[key]
+	if !ok {
+		return 0, false
 	}
-	if idx := strings.LastIndexByte(filename, '.'); idx >= 0 {
-		return filename[idx:]
+
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	default:
+		return 0, false
 	}
-	return ""
 }
 
 func normalizeWithPageBoundaries(raw string, isPDF bool, opts normalizeOptions) (string, []pageBoundary) {

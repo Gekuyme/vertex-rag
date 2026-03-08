@@ -1,7 +1,9 @@
 "use client";
 
-import type { FormEvent, ReactNode } from "react";
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { getMessages } from "../../lib/i18n/messages";
 import { useI18n } from "./I18nProvider";
 import LocaleSwitcher from "./LocaleSwitcher";
@@ -55,7 +57,21 @@ type AuthResponse = {
 type UserSettings = {
   user_id: string;
   default_mode: "strict" | "unstrict";
+  llm_provider: string;
+  llm_model: string;
   updated_at: string;
+};
+
+type LLMProviderOption = {
+  id: string;
+  label: string;
+  default_model: string;
+  models: string[];
+};
+
+type LLMProvidersResponse = {
+  default_provider: string;
+  providers: LLMProviderOption[];
 };
 
 type Chat = {
@@ -87,6 +103,7 @@ type ChatMessage = {
   mode: "strict" | "unstrict";
   content: string;
   citations: Citation[];
+  response_duration_ms?: number | null;
   created_at: string;
   client_status?: "pending" | "failed";
 };
@@ -108,7 +125,6 @@ type StreamDonePayload = {
 
 type ResponseProfile = "fast" | "balanced" | "thinking";
 type StreamPhase = "retrieving" | "drafting" | "finalizing";
-type ChatModel = "qwen" | "gemini";
 type ComposerDropdown = "mode" | "profile" | "model" | null;
 type EmptyComposerMenu = "root" | "mode" | "profile" | null;
 
@@ -142,7 +158,7 @@ const settingsTabIcons: Record<SettingsTab, ReactNode> = {
 };
 
 export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
-  const { messages } = useI18n();
+  const { locale, messages } = useI18n();
   const { themePreference, setThemePreference, resolvedTheme } = useTheme();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [view, setView] = useState<ConsoleView>(initialView);
@@ -175,7 +191,8 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [draftMessage, setDraftMessage] = useState("");
   const [renameChatTitle, setRenameChatTitle] = useState("");
-  const [selectedModel, setSelectedModel] = useState<ChatModel>("qwen");
+  const [llmProviders, setLLMProviders] = useState<LLMProviderOption[]>([]);
+  const [defaultLLMProviderID, setDefaultLLMProviderID] = useState("local");
   const [messageMode, setMessageMode] = useState<"strict" | "unstrict">("strict");
   const [responseProfile, setResponseProfile] = useState<ResponseProfile>("balanced");
   const [openComposerDropdown, setOpenComposerDropdown] = useState<ComposerDropdown>(null);
@@ -184,8 +201,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const [streamPhase, setStreamPhase] = useState<StreamPhase | null>(null);
   const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null);
   const [streamElapsedSeconds, setStreamElapsedSeconds] = useState(0);
-  const [assistantResponseDurations, setAssistantResponseDurations] = useState<Record<string, number>>({});
   const [isStreamingMessage, setIsStreamingMessage] = useState(false);
+  const [composerHistoryIndex, setComposerHistoryIndex] = useState<number | null>(null);
+  const [composerDraftSnapshot, setComposerDraftSnapshot] = useState("");
   const [isCitationPreviewOpen, setIsCitationPreviewOpen] = useState(false);
   const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
@@ -197,8 +215,10 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const chatLoadAbortRef = useRef<AbortController | null>(null);
   const chatStreamAbortRef = useRef<AbortController | null>(null);
+  const refreshSessionPromiseRef = useRef<Promise<string> | null>(null);
   const streamingAssistantBufferRef = useRef("");
   const streamingAssistantFlushFrameRef = useRef<number | null>(null);
+  const shouldStickChatToBottomRef = useRef(true);
 
   const [isBusy, setIsBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -230,6 +250,51 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     [user]
   );
   const canAccessUnstrict = canUseUnstrict || canToggleWebSearch;
+  const composerHistory = useMemo(
+    () =>
+      chatMessages
+        .filter((entry) => entry.role === "user")
+        .map((entry) => entry.content)
+        .filter((content) => content.trim() !== ""),
+    [chatMessages]
+  );
+  const assistantResponseDurations = useMemo(() => {
+    const durations: Record<string, number> = {};
+
+    for (let index = 0; index < chatMessages.length; index += 1) {
+      const entry = chatMessages[index];
+      if (entry.role !== "assistant") {
+        continue;
+      }
+
+      if (typeof entry.response_duration_ms === "number" && entry.response_duration_ms >= 0) {
+        durations[entry.id] = Math.max(0, Math.round(entry.response_duration_ms / 1000));
+        continue;
+      }
+
+      let previousUser: ChatMessage | null = null;
+      for (let previousIndex = index - 1; previousIndex >= 0; previousIndex -= 1) {
+        const candidate = chatMessages[previousIndex];
+        if (candidate.role === "user") {
+          previousUser = candidate;
+          break;
+        }
+      }
+      if (!previousUser) {
+        continue;
+      }
+
+      const startedAt = Date.parse(previousUser.created_at);
+      const finishedAt = Date.parse(entry.created_at);
+      if (Number.isNaN(startedAt) || Number.isNaN(finishedAt) || finishedAt < startedAt) {
+        continue;
+      }
+
+      durations[entry.id] = Math.max(0, Math.round((finishedAt - startedAt) / 1000));
+    }
+
+    return durations;
+  }, [chatMessages]);
   const rolePermissionOptions = useMemo(
     () => [
       { key: "can_upload_docs", label: messages.roles.permissionUploadDocs },
@@ -254,10 +319,20 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     { value: "light", label: messages.settings.themeLight },
     { value: "dark", label: messages.settings.themeDark }
   ];
-  const modelOptions: Array<{ value: ChatModel; label: string }> = [
-    { value: "qwen", label: messages.chat.modelQwen },
-    { value: "gemini", label: messages.chat.modelGemini }
-  ];
+  const modelOptions = useMemo(
+    () =>
+      llmProviders.flatMap((provider) => {
+        if (provider.models.length === 0) {
+          return [{ value: encodeLLMSelection(provider.id, ""), label: provider.label }];
+        }
+
+        return provider.models.map((model) => ({
+          value: encodeLLMSelection(provider.id, model),
+          label: provider.models.length === 1 ? provider.label : `${provider.label} · ${model}`
+        }));
+      }),
+    [llmProviders]
+  );
   const onboardingSteps = useMemo(
     () =>
       onboardingStepTargets.map((step, index) => ({
@@ -278,6 +353,15 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const isCitationPreviewPresent = useModalPresence(isCitationPreviewOpen, modalAnimationMs);
   const currentOnboardingStep = onboardingSteps[onboardingStepIndex] || null;
   const activeResponseProfile = responseProfiles.find((profile) => profile.id === responseProfile) || responseProfiles[1];
+  const selectedModelValue = useMemo(() => {
+    const providerID = settings?.llm_provider || defaultLLMProviderID;
+    const provider = llmProviders.find((entry) => entry.id === providerID) || llmProviders[0] || null;
+    if (!provider) {
+      return "";
+    }
+    const model = settings?.llm_model || provider.default_model || provider.models[0] || "";
+    return encodeLLMSelection(provider.id, model);
+  }, [defaultLLMProviderID, llmProviders, settings?.llm_model, settings?.llm_provider]);
   const currentRequestFailureMessage = messages.feedback.requestFailed;
   const defaultModeValue = settings?.default_mode || "strict";
   const isChatPristine = view === "chat" && chatMessages.length === 0 && !isStreamingMessage;
@@ -316,16 +400,41 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     account: messages.settings.account
   };
 
-  const request = <T,>(path: string, options: RequestOptions = {}) =>
-    apiRequest<T>(path, {
+  const request = async <T,>(path: string, options: RequestOptions = {}) => {
+    const nextOptions = {
       ...options,
       requestFailureMessage: options.requestFailureMessage || currentRequestFailureMessage
-    });
+    };
 
-  const requestMultipart = <T,>(path: string, formData: FormData, accessToken: string) =>
-    apiRequestMultipart<T>(path, formData, accessToken, currentRequestFailureMessage);
+    try {
+      return await apiRequest<T>(path, nextOptions);
+    } catch (requestError) {
+      if (!shouldRetryWithRefresh(path, nextOptions, requestError)) {
+        throw requestError;
+      }
 
-  const requestStream = (
+      const refreshedAccessToken = await refreshSessionToken();
+      return apiRequest<T>(path, {
+        ...nextOptions,
+        token: refreshedAccessToken
+      });
+    }
+  };
+
+  const requestMultipart = async <T,>(path: string, formData: FormData, accessToken: string) => {
+    try {
+      return await apiRequestMultipart<T>(path, formData, accessToken, currentRequestFailureMessage);
+    } catch (requestError) {
+      if (!shouldRetryWithRefresh(path, { method: "POST", token: accessToken }, requestError)) {
+        throw requestError;
+      }
+
+      const refreshedAccessToken = await refreshSessionToken();
+      return apiRequestMultipart<T>(path, formData, refreshedAccessToken, currentRequestFailureMessage);
+    }
+  };
+
+  const requestStream = async (
     chatID: string,
     body: Record<string, unknown>,
     accessToken: string,
@@ -335,21 +444,32 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       onUserMessage: (message: ChatMessage) => void;
       onAssistantDelta: (delta: string) => void;
     }
-  ) =>
-    streamChatMessage(chatID, body, accessToken, {
-      ...handlers,
-      requestFailureMessage: currentRequestFailureMessage
-    });
+  ) => {
+    try {
+      return await streamChatMessage(chatID, body, accessToken, {
+        ...handlers,
+        requestFailureMessage: currentRequestFailureMessage
+      });
+    } catch (requestError) {
+      if (!shouldRetryWithRefresh(`/chats/${chatID}/messages/stream`, { method: "POST", token: accessToken }, requestError)) {
+        throw requestError;
+      }
+
+      const refreshedAccessToken = await refreshSessionToken();
+      return streamChatMessage(chatID, body, refreshedAccessToken, {
+        ...handlers,
+        requestFailureMessage: currentRequestFailureMessage
+      });
+    }
+  };
 
   useEffect(() => {
     const storedToken = window.localStorage.getItem(accessTokenStorageKey);
-    if (!storedToken) {
-      setIsSessionBootstrapping(false);
-      return;
+    if (storedToken) {
+      setToken(storedToken);
     }
 
-    setToken(storedToken);
-    void hydrateSession(storedToken).finally(() => setIsSessionBootstrapping(false));
+    void bootstrapSession(storedToken).finally(() => setIsSessionBootstrapping(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -533,8 +653,113 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     return permissionKeys.map(getTranslatedPermission).join(", ");
   }
 
+  function resizeComposer() {
+    const target = composerRef.current;
+    if (!target) {
+      return;
+    }
+    target.style.height = "auto";
+    target.style.height = `${target.scrollHeight}px`;
+  }
+
+  function setComposerDraft(value: string) {
+    setDraftMessage(value);
+    window.requestAnimationFrame(() => {
+      resizeComposer();
+    });
+  }
+
+  function isCaretAtBoundary(target: HTMLTextAreaElement, direction: "up" | "down") {
+    if (target.selectionStart !== target.selectionEnd) {
+      return false;
+    }
+
+    const caret = target.selectionStart;
+    const value = target.value;
+    if (direction === "up") {
+      return !value.slice(0, caret).includes("\n");
+    }
+    return !value.slice(caret).includes("\n");
+  }
+
+  function navigateComposerHistory(direction: "up" | "down") {
+    if (composerHistory.length === 0) {
+      return;
+    }
+
+    const lastIndex = composerHistory.length - 1;
+    if (direction === "up") {
+      if (composerHistoryIndex === null) {
+        setComposerDraftSnapshot(draftMessage);
+        setComposerHistoryIndex(lastIndex);
+        setComposerDraft(composerHistory[lastIndex]);
+        return;
+      }
+
+      const nextIndex = Math.max(0, composerHistoryIndex - 1);
+      setComposerHistoryIndex(nextIndex);
+      setComposerDraft(composerHistory[nextIndex]);
+      return;
+    }
+
+    if (composerHistoryIndex === null) {
+      return;
+    }
+
+    if (composerHistoryIndex >= lastIndex) {
+      setComposerHistoryIndex(null);
+      setComposerDraft(composerDraftSnapshot);
+      return;
+    }
+
+    const nextIndex = Math.min(lastIndex, composerHistoryIndex + 1);
+    setComposerHistoryIndex(nextIndex);
+    setComposerDraft(composerHistory[nextIndex]);
+  }
+
+  function onComposerChange(nextValue: string) {
+    setDraftMessage(nextValue);
+    setComposerHistoryIndex(null);
+    setComposerDraftSnapshot(nextValue);
+    resizeComposer();
+  }
+
+  function onComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void onSendMessage();
+      return;
+    }
+
+    if (event.key === "ArrowUp" && isCaretAtBoundary(event.currentTarget, "up")) {
+      event.preventDefault();
+      navigateComposerHistory("up");
+      return;
+    }
+
+    if (event.key === "ArrowDown" && isCaretAtBoundary(event.currentTarget, "down")) {
+      event.preventDefault();
+      navigateComposerHistory("down");
+    }
+  }
+
+  function isChatNearBottom(target: HTMLDivElement) {
+    const thresholdPx = 96;
+    return target.scrollHeight - target.scrollTop - target.clientHeight <= thresholdPx;
+  }
+
+  function scrollChatToBottom(behavior: ScrollBehavior = "auto") {
+    const target = scrollRef.current;
+    if (!target) {
+      return;
+    }
+    target.scrollTo({
+      top: target.scrollHeight,
+      behavior
+    });
+  }
+
   useEffect(() => {
-    // Keep the latest message visible when chatting.
     if (view !== "chat") {
       return;
     }
@@ -543,8 +768,43 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     if (!target) {
       return;
     }
-    target.scrollTop = target.scrollHeight;
-  }, [messages, view]);
+
+    const syncScrollState = () => {
+      shouldStickChatToBottomRef.current = isChatNearBottom(target);
+    };
+
+    syncScrollState();
+    target.addEventListener("scroll", syncScrollState);
+    return () => target.removeEventListener("scroll", syncScrollState);
+  }, [view, activeChatID]);
+
+  useEffect(() => {
+    if (view !== "chat") {
+      return;
+    }
+
+    shouldStickChatToBottomRef.current = true;
+    const frameID = window.requestAnimationFrame(() => {
+      scrollChatToBottom("auto");
+    });
+    return () => window.cancelAnimationFrame(frameID);
+  }, [view, activeChatID]);
+
+  useEffect(() => {
+    if (view !== "chat" || !shouldStickChatToBottomRef.current) {
+      return;
+    }
+
+    const frameID = window.requestAnimationFrame(() => {
+      scrollChatToBottom(isStreamingMessage ? "auto" : "smooth");
+    });
+    return () => window.cancelAnimationFrame(frameID);
+  }, [chatMessages, streamingAssistant, isStreamingMessage, view]);
+
+  useEffect(() => {
+    setComposerHistoryIndex(null);
+    setComposerDraftSnapshot("");
+  }, [activeChatID]);
 
   useEffect(() => {
     if (!isSettingsOpen && !isUploadModalOpen && !isRenameChatModalOpen && !isCitationPreviewOpen) {
@@ -625,40 +885,80 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     };
   }, [currentOnboardingStep, isOnboardingOpen]);
 
-  async function hydrateSession(accessToken: string) {
+  async function bootstrapSession(accessToken?: string | null) {
     try {
-      const profile = await request<User>("/me", { token: accessToken });
-      setUser(profile);
-
-      const [nextSettings] = await Promise.all([
-        request<UserSettings>("/me/settings", { token: accessToken }),
-        loadWorkspace(accessToken, profile),
-        bootstrapChats(accessToken)
-      ]);
-      setSettings(nextSettings);
-
-      setMessage(messages.feedback.signedIn(profile.email));
-      setError("");
-      return;
-    } catch {
-      try {
-        const refreshed = await request<AuthResponse>("/auth/refresh", { method: "POST" });
-        persistAccessToken(refreshed.access_token);
-        setUser(refreshed.user);
+      if (accessToken) {
+        const profile = await request<User>("/me", { token: accessToken });
+        setUser(profile);
 
         const [nextSettings] = await Promise.all([
-          request<UserSettings>("/me/settings", { token: refreshed.access_token }),
-          loadWorkspace(refreshed.access_token, refreshed.user),
-          bootstrapChats(refreshed.access_token)
+          loadUserPreferences(accessToken),
+          loadWorkspace(accessToken, profile),
+          bootstrapChats(accessToken)
         ]);
         setSettings(nextSettings);
 
-        setMessage(messages.feedback.sessionRestored(refreshed.user.email));
+        setMessage(messages.feedback.signedIn(profile.email));
         setError("");
-      } catch {
-        clearSession();
+        return;
       }
+    } catch {}
+
+    try {
+      const refreshedAccessToken = await refreshSessionToken();
+      const refreshedUser = await request<User>("/me", { token: refreshedAccessToken });
+      setUser(refreshedUser);
+
+      const [nextSettings] = await Promise.all([
+        loadUserPreferences(refreshedAccessToken),
+        loadWorkspace(refreshedAccessToken, refreshedUser),
+        bootstrapChats(refreshedAccessToken)
+      ]);
+      setSettings(nextSettings);
+
+      setMessage(messages.feedback.sessionRestored(refreshedUser.email));
+      setError("");
+    } catch {
+      clearSession();
     }
+  }
+
+  async function refreshSessionToken(): Promise<string> {
+    if (refreshSessionPromiseRef.current) {
+      return refreshSessionPromiseRef.current;
+    }
+
+    const refreshPromise = apiRequest<AuthResponse>("/auth/refresh", {
+      method: "POST",
+      requestFailureMessage: currentRequestFailureMessage
+    })
+      .then((authResponse) => {
+        persistAccessToken(authResponse.access_token);
+        setUser(authResponse.user);
+        setError("");
+        return authResponse.access_token;
+      })
+      .catch((requestError) => {
+        clearSession();
+        throw requestError;
+      })
+      .finally(() => {
+        refreshSessionPromiseRef.current = null;
+      });
+
+    refreshSessionPromiseRef.current = refreshPromise;
+    return refreshPromise;
+  }
+
+  async function loadUserPreferences(accessToken: string) {
+    const [nextSettings, providerCatalog] = await Promise.all([
+      request<UserSettings>("/me/settings", { token: accessToken }),
+      request<LLMProvidersResponse>("/llm/providers", { token: accessToken })
+    ]);
+
+    setLLMProviders(providerCatalog.providers);
+    setDefaultLLMProviderID(providerCatalog.default_provider);
+    return nextSettings;
   }
 
   async function loadWorkspace(accessToken: string, profile: User) {
@@ -763,7 +1063,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       setUser(authResponse.user);
 
       const [nextSettings] = await Promise.all([
-        request<UserSettings>("/me/settings", { token: authResponse.access_token }),
+        loadUserPreferences(authResponse.access_token),
         loadWorkspace(authResponse.access_token, authResponse.user),
         bootstrapChats(authResponse.access_token)
       ]);
@@ -973,9 +1273,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setMessage("");
     setError("");
     setDraftMessage("");
+    setComposerHistoryIndex(null);
+    setComposerDraftSnapshot("");
     resetStreamingAssistant();
     setStreamPhase("retrieving");
-    setStreamStartedAt(Date.now());
+    const startedAt = Date.now();
+    setStreamStartedAt(startedAt);
     setStreamElapsedSeconds(0);
     setChatMessages((current) => [...current, optimisticUserMessage]);
     let persistedUserMessageID = "";
@@ -993,6 +1296,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       if (messageMode) {
         payload.mode = messageMode;
       }
+      payload.locale = locale;
       payload.top_k = activeResponseProfile.topK;
       payload.candidate_k = activeResponseProfile.candidateK;
 
@@ -1037,13 +1341,6 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
         }
         return nextMessages;
       });
-      if (streamStartedAt !== null) {
-        const elapsedSeconds = Math.max(0, Math.floor((Date.now() - streamStartedAt) / 1000));
-        setAssistantResponseDurations((current) => ({
-          ...current,
-          [response.assistant_message.id]: elapsedSeconds
-        }));
-      }
       resetStreamingAssistant();
       // Refresh list so sidebar ordering stays accurate, but keep active chat and local messages.
       void refreshChats(token).catch(() => {});
@@ -1214,6 +1511,41 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     }
   }
 
+  async function onUpdateLLMSelection(value: string) {
+    if (!token) {
+      return;
+    }
+
+    const nextSelection = decodeLLMSelection(value);
+    if (!nextSelection) {
+      return;
+    }
+    if (settings?.llm_provider === nextSelection.provider && settings?.llm_model === nextSelection.model) {
+      setOpenComposerDropdown(null);
+      return;
+    }
+
+    setIsBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      const updated = await request<UserSettings>("/me/settings", {
+        method: "PATCH",
+        token,
+        body: {
+          llm_provider: nextSelection.provider,
+          llm_model: nextSelection.model
+        }
+      });
+      setSettings(updated);
+      setOpenComposerDropdown(null);
+    } catch (requestError) {
+      setError(errorMessage(requestError, messages.feedback.unexpectedError));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   function resetRoleDraft() {
     setEditingRoleID(null);
     setRoleDraftName("");
@@ -1372,10 +1704,13 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     chatLoadAbortRef.current = null;
     chatStreamAbortRef.current?.abort();
     chatStreamAbortRef.current = null;
+    refreshSessionPromiseRef.current = null;
     window.localStorage.removeItem(accessTokenStorageKey);
     setToken("");
     setUser(null);
     setSettings(null);
+    setLLMProviders([]);
+    setDefaultLLMProviderID("local");
     setView(initialView);
 
     setRoles([]);
@@ -1392,7 +1727,6 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setChats([]);
     setActiveChatID("");
     setChatMessages([]);
-    setAssistantResponseDurations({});
     setDraftMessage("");
     resetStreamingAssistant();
     setIsStreamingMessage(false);
@@ -1618,13 +1952,10 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                   {view === "chat" && (
                     <ComposerDropdownMenu
                       isOpen={openComposerDropdown === "model"}
-                      label={modelOptions.find((option) => option.value === selectedModel)?.label || messages.chat.modelQwen}
+                      label={modelOptions.find((option) => option.value === selectedModelValue)?.label || modelOptions[0]?.label || messages.chat.model}
                       onToggle={() => setOpenComposerDropdown((current) => current === "model" ? null : "model")}
                       options={modelOptions}
-                      onSelect={(value) => {
-                        setSelectedModel(value as ChatModel);
-                        setOpenComposerDropdown(null);
-                      }}
+                      onSelect={onUpdateLLMSelection}
                       menuPlacement="bottom"
                       ariaLabel={messages.chat.model}
                       triggerClassName="headerModelTrigger"
@@ -1647,14 +1978,13 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                         key={entry.id}
                         className={`chatMessageRow ${entry.role === "user" ? "fromUser" : "fromAssistant"} ${entry.client_status === "failed" ? "isFailed" : ""}`}
                       >
+                        {entry.role === "assistant" && assistantResponseDurations[entry.id] !== undefined && (
+                          <ChatWorkedDivider label={messages.chat.workedFor(formatElapsed(assistantResponseDurations[entry.id]))} />
+                        )}
                         <div className="chatBubble">
-                          <div className="chatBubbleMeta">
-                            <span className="chatRole">{entry.role === "user" ? messages.chat.you : messages.chat.assistant}</span>
-                            {entry.role === "assistant" && assistantResponseDurations[entry.id] !== undefined && (
-                              <span className="chatMetaTime">{formatElapsed(assistantResponseDurations[entry.id])}</span>
-                            )}
+                          <div className="chatBubbleContent">
+                            <ChatMessageContent role={entry.role} content={entry.content} />
                           </div>
-                          <div className="chatBubbleContent">{entry.content}</div>
                           {entry.role === "user" && entry.client_status === "failed" && (
                             <div className="chatBubbleHint">{messages.chat.failedDelivery}</div>
                           )}
@@ -1695,11 +2025,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                       <div className="chatMessageRow fromAssistant">
                         <div className="chatBubble">
                           <div className="chatBubbleMeta">
-                            <span className="chatRole">{messages.chat.assistant}</span>
                             <span className="chatMetaTime">{formatElapsed(streamElapsedSeconds)}</span>
                           </div>
                           <div className="chatBubbleContent">
-                            {streamingAssistant || (
+                            {streamingAssistant ? (
+                              <ChatMessageContent role="assistant" content={streamingAssistant} />
+                            ) : (
                               <span className="thinkingText">
                                 {streamPhaseLabel(streamPhase, responseProfile)}
                                 <span className="thinkingDots" aria-hidden="true"></span>
@@ -1812,19 +2143,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                             ref={composerRef}
                             value={draftMessage}
                             onChange={(event) => {
-                              setDraftMessage(event.target.value);
-                              event.currentTarget.style.height = "auto";
-                              event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`;
+                              onComposerChange(event.target.value);
                             }}
                             placeholder={messages.chat.composerPlaceholder}
                             rows={1}
                             className="composerInput composerInputEmpty"
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter" && !event.shiftKey) {
-                                event.preventDefault();
-                                void onSendMessage();
-                              }
-                            }}
+                            onKeyDown={onComposerKeyDown}
                           />
                           <button
                             type="submit"
@@ -1843,19 +2167,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                             ref={composerRef}
                             value={draftMessage}
                             onChange={(event) => {
-                              setDraftMessage(event.target.value);
-                              event.currentTarget.style.height = "auto";
-                              event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`;
+                              onComposerChange(event.target.value);
                             }}
                             placeholder={messages.chat.composerPlaceholder}
                             rows={1}
                             className="composerInput"
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter" && !event.shiftKey) {
-                                event.preventDefault();
-                                void onSendMessage();
-                              }
-                            }}
+                            onKeyDown={onComposerKeyDown}
                           />
                           <div className="composerBottomRow">
                           <div className="composerTabs" aria-label={messages.chat.composerOptions}>
@@ -2893,6 +3210,65 @@ function ComposerDropdownMenu({
   );
 }
 
+function ChatMessageContent({
+  role,
+  content
+}: {
+  role: "user" | "assistant";
+  content: string;
+}) {
+  if (role === "user") {
+    return <span className="chatPlainText">{content}</span>;
+  }
+
+  return (
+    <div className="chatRichText">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a(props) {
+            return <a {...props} target="_blank" rel="noreferrer" />;
+          },
+          pre(props) {
+            const { className, ...rest } = props;
+            return <pre className={["chatCodeBlock", className].filter(Boolean).join(" ")} {...rest} />;
+          },
+          code(props) {
+            const { className, children, ...rest } = props;
+            const value = String(children).replace(/\n$/, "");
+            const isBlock =
+              (typeof className === "string" && className.includes("language-")) || value.includes("\n");
+            if (isBlock) {
+              return (
+                <code className={className} {...rest}>
+                  {value}
+                </code>
+              );
+            }
+            return (
+              <code className="chatInlineCode" {...rest}>
+                {value}
+              </code>
+            );
+          }
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+function ChatWorkedDivider({ label }: { label: string }) {
+  return (
+    <div className="chatWorkedDivider" aria-label={label}>
+      <span className="chatWorkedDividerLine" aria-hidden="true"></span>
+      <span className="chatWorkedDividerLabel">{label}</span>
+      <span className="chatWorkedDividerLine" aria-hidden="true"></span>
+    </div>
+  );
+}
+
 function SettingsSection({
   title,
   description,
@@ -3040,6 +3416,16 @@ function EmptyMenuChevronIcon() {
   );
 }
 
+class APIRequestError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "APIRequestError";
+    this.status = status;
+  }
+}
+
 async function apiRequest<T = unknown>(path: string, options: RequestOptions = {}): Promise<T> {
   const response = await fetch(`${APIBaseURL}${path}`, {
     method: options.method || "GET",
@@ -3058,7 +3444,7 @@ async function apiRequest<T = unknown>(path: string, options: RequestOptions = {
       typeof payload?.error === "string"
         ? payload.error
         : options.requestFailureMessage?.(response.status) || `Request failed: ${response.status}`;
-    throw new Error(reason);
+    throw new APIRequestError(reason, response.status);
   }
 
   return payload as T;
@@ -3085,7 +3471,7 @@ async function apiRequestMultipart<T = unknown>(
       typeof payload?.error === "string"
         ? payload.error
         : requestFailureMessage?.(response.status) || `Request failed: ${response.status}`;
-    throw new Error(reason);
+    throw new APIRequestError(reason, response.status);
   }
 
   return payload as T;
@@ -3120,7 +3506,7 @@ async function streamChatMessage(
       typeof payload?.error === "string"
         ? payload.error
         : handlers.requestFailureMessage?.(response.status) || `Request failed: ${response.status}`;
-    throw new Error(reason);
+    throw new APIRequestError(reason, response.status);
   }
 
   if (!response.body) {
@@ -3216,8 +3602,32 @@ function parseSSEEvent(rawChunk: string): { event: string; data: string } | null
   };
 }
 
+function encodeLLMSelection(provider: string, model: string): string {
+  return `${provider}::${model}`;
+}
+
+function decodeLLMSelection(value: string): { provider: string; model: string } | null {
+  const separatorIndex = value.indexOf("::");
+  if (separatorIndex === -1) {
+    return null;
+  }
+  return {
+    provider: value.slice(0, separatorIndex).trim(),
+    model: value.slice(separatorIndex + 2).trim()
+  };
+}
+
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
+}
+
+function shouldRetryWithRefresh(path: string, options: RequestOptions, error: unknown): boolean {
+  return (
+    error instanceof APIRequestError &&
+    error.status === 401 &&
+    Boolean(options.token) &&
+    !path.startsWith("/auth/")
+  );
 }
 
 function errorMessage(value: unknown, fallback: string): string {
