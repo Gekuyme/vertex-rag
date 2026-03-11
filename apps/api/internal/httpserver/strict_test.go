@@ -110,6 +110,47 @@ func TestBuildLLMContext_IncludesChunkKindMetadata(t *testing.T) {
 	}
 }
 
+func TestBuildLLMContext_PrefersLocalParentWindowAroundHit(t *testing.T) {
+	parent := strings.TrimSpace(`
+1. СТРОКИ
+- В Go строка — это неизменяемая последовательность байт.
+
+2. МАССИВЫ
+- Массив: фиксированная последовательность элементов одного типа.
+- Размер входит в тип массива.
+`)
+	target := "2. МАССИВЫ\n- Массив: фиксированная последовательность элементов одного типа."
+	start := strings.Index(parent, target)
+	if start < 0 {
+		t.Fatalf("expected target excerpt inside parent content")
+	}
+	end := start + len(target)
+
+	context := buildLLMContext([]store.RetrievalChunk{
+		{
+			ChunkID:        "c1",
+			DocTitle:       "Go basics",
+			DocFilename:    "go.txt",
+			ChunkIndex:     2,
+			Content:        target,
+			ParentContent:  parent,
+			ParentMetadata: map[string]any{"char_start": 0},
+			Metadata: map[string]any{
+				"chunk_kind": "definition",
+				"char_start": start,
+				"char_end":   end,
+			},
+		},
+	}, 500)
+
+	if !containsAll(context, "2. МАССИВЫ", "Массив: фиксированная последовательность") {
+		t.Fatalf("expected local arrays excerpt in llm context, got %q", context)
+	}
+	if strings.HasPrefix(strings.TrimSpace(context), "[1] Go basics (go.txt) chunk:2 kind:definition\n1. СТРОКИ") {
+		t.Fatalf("expected llm context to avoid leading unrelated parent content, got %q", context)
+	}
+}
+
 func TestFocusRetrievedChunks_DefinitionFiltersOffTopicChunks(t *testing.T) {
 	retrieved := []store.RetrievalChunk{
 		{

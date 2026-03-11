@@ -303,9 +303,11 @@ type createChatMessageRequest struct {
 }
 
 type retrievalDebugRequest struct {
-	Query      string `json:"query"`
-	TopK       int    `json:"top_k"`
-	CandidateK int    `json:"candidate_k"`
+	Query            string `json:"query"`
+	TopK             int    `json:"top_k"`
+	CandidateK       int    `json:"candidate_k"`
+	PipelineVersion  string `json:"pipeline_version"`
+	ComparePipelines bool   `json:"compare_pipelines"`
 }
 
 type retrievalCitation struct {
@@ -314,6 +316,7 @@ type retrievalCitation struct {
 	DocTitle        string         `json:"doc_title"`
 	DocFilename     string         `json:"doc_filename"`
 	Snippet         string         `json:"snippet"`
+	EvidenceSpan    string         `json:"evidence_span,omitempty"`
 	Page            *int           `json:"page,omitempty"`
 	Section         string         `json:"section,omitempty"`
 	ParentSectionID string         `json:"parent_id,omitempty"`
@@ -328,6 +331,14 @@ type retrievalCitation struct {
 	QueryVariant    string         `json:"query_variant,omitempty"`
 	RetrieversUsed  []string       `json:"retrievers_used,omitempty"`
 	Metadata        map[string]any `json:"metadata"`
+}
+
+type queryRoutePlan struct {
+	Route        string `json:"route"`
+	UseRetrieval bool   `json:"use_retrieval"`
+	UseWebSearch bool   `json:"use_web_search"`
+	SkipReason   string `json:"skip_reason,omitempty"`
+	QueryType    string `json:"query_type"`
 }
 
 const (
@@ -951,38 +962,93 @@ func (s *Server) debugRetrieval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	topK, candidateK, queryIntent := adjustRetrievalLimitsForQuery(query, payload.TopK, payload.CandidateK)
-	if s.shouldUseRetrievalV2() {
-		results, debugInfo, err := s.retrieveForChatV2(r.Context(), user, query, topK, candidateK)
+
+	if payload.ComparePipelines {
+		routePlan := s.planQueryRoute(user, store.ModeStrict, query)
+		baselinePayload, err := s.debugRetrievalBaselinePayload(r.Context(), user, query, topK, candidateK, queryIntent)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to retrieve chunks: %v", err))
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to retrieve baseline chunks: %v", err))
+			return
+		}
+		v2Payload, err := s.debugRetrievalV2Payload(r.Context(), user, query, topK, candidateK, queryIntent)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to retrieve v2 chunks: %v", err))
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"query":          query,
-			"query_intent":   queryIntent,
-			"top_k":          topK,
-			"candidate_k":    candidateK,
-			"citations":      buildRetrievalCitations(results),
-			"llm_context":    buildLLMContext(results, 5000),
-			"query_analysis": debugInfo.Analysis,
-			"query_variants": debugInfo.QueryVariants,
+			"query":        query,
+			"query_intent": queryIntent,
+			"top_k":        topK,
+			"candidate_k":  candidateK,
+			"route_plan":   routePlan,
+			"baseline":     baselinePayload,
+			"v2":           v2Payload,
 		})
 		return
 	}
 
+	pipelineVersion := strings.TrimSpace(strings.ToLower(payload.PipelineVersion))
+	if pipelineVersion == "" {
+		if s.shouldUseRetrievalV2() {
+			pipelineVersion = "v2"
+		} else {
+			pipelineVersion = "v1"
+		}
+	}
+	if pipelineVersion == "v2" {
+		payload, err := s.debugRetrievalV2Payload(r.Context(), user, query, topK, candidateK, queryIntent)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to retrieve chunks: %v", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, payload)
+		return
+	}
+
+	payloadMap, err := s.debugRetrievalBaselinePayload(r.Context(), user, query, topK, candidateK, queryIntent)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to retrieve chunks: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, payloadMap)
+}
+
+func (s *Server) debugRetrievalV2Payload(ctx context.Context, user store.User, query string, topK, candidateK int, queryIntent string) (map[string]any, error) {
+	routePlan := s.planQueryRoute(user, store.ModeStrict, query)
+	results, debugInfo, err := s.retrieveForChatV2(ctx, user, query, topK, candidateK)
+	if err != nil {
+		return nil, err
+	}
+	citations := buildRetrievalCitations(results)
+	return map[string]any{
+		"pipeline_version": "v2",
+		"query":            query,
+		"query_intent":     queryIntent,
+		"top_k":            topK,
+		"candidate_k":      candidateK,
+		"route_plan":       routePlan,
+		"citations":        citations,
+		"llm_context":      buildLLMContext(results, 5000),
+		"query_analysis":   debugInfo.Analysis,
+		"query_variants":   debugInfo.QueryVariants,
+		"dense_variants":   debugInfo.DenseVariants,
+		"grounding":        buildGroundingSummary(results, citations),
+	}, nil
+}
+
+func (s *Server) debugRetrievalBaselinePayload(ctx context.Context, user store.User, query string, topK, candidateK int, queryIntent string) (map[string]any, error) {
+	routePlan := s.planQueryRoute(user, store.ModeStrict, query)
 	embedQuery, textQuery := buildRetrievalQueries(query)
 
-	vectors, err := s.embeddings.Embed(r.Context(), []string{embedQuery})
+	vectors, err := s.embeddings.Embed(ctx, []string{embedQuery})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to embed query: %v", err))
-		return
+		return nil, fmt.Errorf("failed to embed query: %w", err)
 	}
 	if len(vectors) != 1 {
-		writeError(w, http.StatusInternalServerError, "embedding provider returned unexpected result")
-		return
+		return nil, fmt.Errorf("embedding provider returned unexpected result")
 	}
 
-	results, err := s.store.RetrieveChunks(r.Context(), store.RetrievalOptions{
+	results, err := s.store.RetrieveChunks(ctx, store.RetrievalOptions{
 		OrgID:          user.OrgID,
 		RoleID:         user.RoleID,
 		Query:          textQuery,
@@ -992,20 +1058,23 @@ func (s *Server) debugRetrieval(w http.ResponseWriter, r *http.Request) {
 		CandidateK:     candidateK,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to retrieve chunks: %v", err))
-		return
+		return nil, err
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"query":        query,
-		"embed_query":  embedQuery,
-		"text_query":   textQuery,
-		"query_intent": queryIntent,
-		"top_k":        topK,
-		"candidate_k":  candidateK,
-		"citations":    buildRetrievalCitations(results),
-		"llm_context":  buildLLMContext(results, 5000),
-	})
+	citations := buildRetrievalCitations(results)
+	return map[string]any{
+		"pipeline_version": "v1",
+		"query":            query,
+		"embed_query":      embedQuery,
+		"text_query":       textQuery,
+		"query_intent":     queryIntent,
+		"top_k":            topK,
+		"candidate_k":      candidateK,
+		"route_plan":       routePlan,
+		"citations":        citations,
+		"llm_context":      buildLLMContext(results, 5000),
+		"grounding":        buildGroundingSummary(results, citations),
+	}, nil
 }
 
 func (s *Server) topDocStats(w http.ResponseWriter, r *http.Request) {
@@ -1283,16 +1352,23 @@ func (s *Server) createChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	metrics.persistUser = time.Since(metrics.start) - metrics.loadChat
 
+	routePlan := s.planQueryRoute(user, mode, query)
 	historyCh := s.preloadChatHistory(r.Context(), user.OrgID, chatID, mode, query)
-	webContextCh := s.preloadWebSearchContext(r.Context(), user, mode, query)
+	webContextCh := s.preloadWebSearchContext(r.Context(), user, mode, query, routePlan)
 
 	retrieveStartedAt := time.Now()
 	topK, candidateK, _ := adjustRetrievalLimitsForQuery(query, payload.TopK, payload.CandidateK)
-	retrieved, citations, kbVersion, err := s.retrieveForChat(r.Context(), user, mode, query, topK, candidateK)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to retrieve context")
-		return
+	var retrieved []store.RetrievalChunk
+	var citations []retrievalCitation
+	var kbVersion int64
+	if routePlan.UseRetrieval {
+		retrieved, citations, kbVersion, err = s.retrieveForChat(r.Context(), user, mode, query, topK, candidateK)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to retrieve context")
+			return
+		}
 	}
+	grounding := buildGroundingSummary(retrieved, citations)
 	metrics.retrieve = time.Since(retrieveStartedAt)
 	s.trackTopDocumentHits(r.Context(), user.OrgID, citations)
 
@@ -1353,9 +1429,11 @@ func (s *Server) createChatMessage(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mode":              mode,
+		"route_plan":        routePlan,
 		"user_message":      userMessage,
 		"assistant_message": assistantMessage,
 		"citations":         citations,
+		"grounding":         grounding,
 	})
 }
 
@@ -1452,20 +1530,27 @@ func (s *Server) createChatMessageStream(w http.ResponseWriter, r *http.Request)
 	}
 	flusher.Flush()
 
+	routePlan := s.planQueryRoute(user, mode, query)
 	historyCh := s.preloadChatHistory(r.Context(), user.OrgID, chatID, mode, query)
-	webContextCh := s.preloadWebSearchContext(r.Context(), user, mode, query)
+	webContextCh := s.preloadWebSearchContext(r.Context(), user, mode, query, routePlan)
 
 	retrieveStartedAt := time.Now()
 	topK, candidateK, _ := adjustRetrievalLimitsForQuery(query, payload.TopK, payload.CandidateK)
-	retrieved, citations, kbVersion, err := s.retrieveForChat(r.Context(), user, mode, query, topK, candidateK)
-	if err != nil {
-		metrics.retrieve = time.Since(retrieveStartedAt)
-		metrics.total = time.Since(metrics.start)
-		logChatFlowMetrics("stream", user.OrgID, user.ID, chatID, mode, query, topK, candidateK, 0, 0, metrics, err)
-		_ = writeSSE(w, "error", map[string]string{"error": "failed to retrieve context"})
-		flusher.Flush()
-		return
+	var retrieved []store.RetrievalChunk
+	var citations []retrievalCitation
+	var kbVersion int64
+	if routePlan.UseRetrieval {
+		retrieved, citations, kbVersion, err = s.retrieveForChat(r.Context(), user, mode, query, topK, candidateK)
+		if err != nil {
+			metrics.retrieve = time.Since(retrieveStartedAt)
+			metrics.total = time.Since(metrics.start)
+			logChatFlowMetrics("stream", user.OrgID, user.ID, chatID, mode, query, topK, candidateK, 0, 0, metrics, err)
+			_ = writeSSE(w, "error", map[string]string{"error": "failed to retrieve context"})
+			flusher.Flush()
+			return
+		}
 	}
+	grounding := buildGroundingSummary(retrieved, citations)
 	metrics.retrieve = time.Since(retrieveStartedAt)
 	s.trackTopDocumentHits(r.Context(), user.OrgID, citations)
 
@@ -1595,9 +1680,11 @@ func (s *Server) createChatMessageStream(w http.ResponseWriter, r *http.Request)
 
 	_ = writeSSE(w, "done", map[string]any{
 		"mode":              mode,
+		"route_plan":        routePlan,
 		"user_message":      userMessage,
 		"assistant_message": assistantMessage,
 		"citations":         citations,
+		"grounding":         grounding,
 	})
 	flusher.Flush()
 }
@@ -1821,10 +1908,7 @@ func buildLLMContext(chunks []store.RetrievalChunk, maxChars int) string {
 			chunk.ChunkIndex,
 			metaSuffix,
 		)
-		content := strings.TrimSpace(chunk.ParentContent)
-		if content == "" {
-			content = strings.TrimSpace(chunk.Content)
-		}
+		content := llmContextChunkContent(chunk)
 		content += "\n\n"
 
 		if builder.Len()+len(header)+len(content) > maxChars {
@@ -1836,6 +1920,73 @@ func buildLLMContext(chunks []store.RetrievalChunk, maxChars int) string {
 	}
 
 	return strings.TrimSpace(builder.String())
+}
+
+func llmContextChunkContent(chunk store.RetrievalChunk) string {
+	if excerpt := parentContextWindow(chunk, 120, 260); excerpt != "" {
+		return excerpt
+	}
+
+	if evidence := strings.TrimSpace(extractEvidenceSpan(chunk)); evidence != "" {
+		return evidence
+	}
+
+	content := strings.TrimSpace(chunk.ParentContent)
+	if content == "" {
+		content = strings.TrimSpace(chunk.Content)
+	}
+	return truncateSnippet(content, 420)
+}
+
+func parentContextWindow(chunk store.RetrievalChunk, beforeRunes, afterRunes int) string {
+	parentContent := strings.TrimSpace(chunk.ParentContent)
+	if parentContent == "" {
+		return ""
+	}
+
+	parentStart := metadataInt(chunk.ParentMetadata, "char_start")
+	childStart := metadataInt(chunk.Metadata, "char_start")
+	childEnd := metadataInt(chunk.Metadata, "char_end")
+	if parentStart == nil || childStart == nil || childEnd == nil {
+		return ""
+	}
+
+	localStart := *childStart - *parentStart
+	localEnd := *childEnd - *parentStart
+	parentRunes := []rune(parentContent)
+	if localStart < 0 || localStart >= len(parentRunes) {
+		return ""
+	}
+	if localEnd <= localStart {
+		localEnd = localStart + minInt(len([]rune(strings.TrimSpace(chunk.Content))), 1)
+	}
+	if localEnd > len(parentRunes) {
+		localEnd = len(parentRunes)
+	}
+
+	start := localStart - beforeRunes
+	if start < 0 {
+		start = 0
+	}
+	end := localEnd + afterRunes
+	if end > len(parentRunes) {
+		end = len(parentRunes)
+	}
+	if end <= start {
+		return ""
+	}
+
+	excerpt := strings.TrimSpace(string(parentRunes[start:end]))
+	if excerpt == "" {
+		return ""
+	}
+	if start > 0 {
+		excerpt = "... " + excerpt
+	}
+	if end < len(parentRunes) {
+		excerpt += " ..."
+	}
+	return excerpt
 }
 
 type retrievalCachePayload struct {
@@ -2131,6 +2282,7 @@ func buildRetrievalCitations(retrieved []store.RetrievalChunk) []retrievalCitati
 			DocTitle:        result.DocTitle,
 			DocFilename:     result.DocFilename,
 			Snippet:         truncateSnippet(snippetSource, 520),
+			EvidenceSpan:    extractEvidenceSpan(result),
 			Page:            metadataInt(result.Metadata, "page"),
 			Section:         firstNonEmptyString(metadataString(result.Metadata, "section"), metadataString(result.ParentMetadata, "section")),
 			ParentSectionID: result.ParentSectionID,
@@ -2149,6 +2301,32 @@ func buildRetrievalCitations(retrieved []store.RetrievalChunk) []retrievalCitati
 	}
 
 	return citations
+}
+
+func extractEvidenceSpan(result store.RetrievalChunk) string {
+	if parentContent := strings.TrimSpace(result.ParentContent); parentContent != "" {
+		parentStart := metadataInt(result.ParentMetadata, "char_start")
+		childStart := metadataInt(result.Metadata, "char_start")
+		childEnd := metadataInt(result.Metadata, "char_end")
+		if parentStart != nil && childStart != nil && childEnd != nil {
+			localStart := *childStart - *parentStart
+			localEnd := *childEnd - *parentStart
+			if localStart < 0 {
+				localStart = 0
+			}
+			parentRunes := []rune(parentContent)
+			if localStart < len(parentRunes) {
+				if localEnd > len(parentRunes) {
+					localEnd = len(parentRunes)
+				}
+				if localEnd > localStart {
+					return truncateSnippet(strings.TrimSpace(string(parentRunes[localStart:localEnd])), 320)
+				}
+			}
+		}
+	}
+
+	return truncateSnippet(strings.TrimSpace(result.Content), 320)
 }
 
 func focusRetrievedChunks(query, queryIntent string, retrieved []store.RetrievalChunk) []store.RetrievalChunk {
@@ -3535,6 +3713,57 @@ func (s *Server) shouldUseWebSearchContext(user store.User, mode string) bool {
 	return hasPermission(user.Permissions, store.PermissionToggleWebSearch)
 }
 
+func (s *Server) planQueryRoute(user store.User, mode string, query string) queryRoutePlan {
+	trimmed := strings.TrimSpace(query)
+	queryType := detectQueryIntent(trimmed)
+	plan := queryRoutePlan{
+		Route:        "vector+sparse",
+		UseRetrieval: true,
+		UseWebSearch: false,
+		QueryType:    queryType,
+	}
+
+	if mode == store.ModeUnstrict && s.shouldUseWebSearchContext(user, mode) && looksWebFreshnessQuery(trimmed) {
+		plan.Route = "web"
+		plan.UseRetrieval = false
+		plan.UseWebSearch = true
+		plan.SkipReason = "freshness-oriented query in unstrict mode"
+		return plan
+	}
+
+	if mode == store.ModeUnstrict && isSmallTalkQuery(trimmed) {
+		plan.Route = "no-retrieval"
+		plan.UseRetrieval = false
+		plan.SkipReason = "small-talk query does not need retrieval"
+		return plan
+	}
+
+	return plan
+}
+
+func looksWebFreshnessQuery(query string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(query))
+	if normalized == "" {
+		return false
+	}
+	return containsAny(normalized,
+		"latest", "recent", "today", "news", "current",
+		"последние", "сегодня", "новости", "актуаль", "текущ",
+	)
+}
+
+func isSmallTalkQuery(query string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(query))
+	if normalized == "" {
+		return false
+	}
+	if containsAny(normalized, "привет", "hello", "hi", "thanks", "спасибо", "как дела", "how are you") {
+		return true
+	}
+	tokens := tokenizeQuery(normalized)
+	return len(tokens) <= 3 && containsAny(normalized, "ok", "понятно", "ясно")
+}
+
 func (s *Server) buildWebSearchContext(ctx context.Context, query string) string {
 	if s.search == nil || !s.search.Enabled() {
 		return ""
@@ -3576,7 +3805,11 @@ func (s *Server) preloadWebSearchContext(
 	user store.User,
 	mode string,
 	query string,
+	routePlan queryRoutePlan,
 ) <-chan string {
+	if !routePlan.UseWebSearch {
+		return nil
+	}
 	if !s.shouldUseWebSearchContext(user, mode) {
 		return nil
 	}

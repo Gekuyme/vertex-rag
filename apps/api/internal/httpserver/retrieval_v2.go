@@ -20,12 +20,14 @@ type queryAnalysis struct {
 	NeedsRewrite             bool     `json:"needs_rewrite"`
 	NeedsExpansion           bool     `json:"needs_expansion"`
 	NeedsMultiEntityCoverage bool     `json:"needs_multi_entity_coverage"`
+	IsShortQuery             bool     `json:"is_short_query"`
 	Entities                 []string `json:"entities,omitempty"`
 }
 
 type retrievalV2Debug struct {
 	Analysis      queryAnalysis `json:"query_analysis"`
 	QueryVariants []string      `json:"query_variants"`
+	DenseVariants []string      `json:"dense_variants,omitempty"`
 }
 
 type fusedCandidate struct {
@@ -54,8 +56,9 @@ func (s *Server) retrieveForChatV2(
 ) ([]store.RetrievalChunk, retrievalV2Debug, error) {
 	analysis := analyzeQuery(query)
 	variants := s.buildQueryVariants(ctx, query, analysis)
+	denseVariants := s.buildDenseQueryVariants(ctx, query, analysis, variants)
 
-	denseCandidates, err := s.collectDenseCandidates(ctx, user, variants, candidateK)
+	denseCandidates, err := s.collectDenseCandidates(ctx, user, denseVariants, candidateK)
 	if err != nil {
 		return nil, retrievalV2Debug{}, err
 	}
@@ -67,7 +70,7 @@ func (s *Server) retrieveForChatV2(
 
 	candidates := fuseCandidates(denseCandidates, sparseCandidates)
 	if len(candidates) == 0 {
-		return nil, retrievalV2Debug{Analysis: analysis, QueryVariants: variants}, nil
+		return nil, retrievalV2Debug{Analysis: analysis, QueryVariants: variants, DenseVariants: denseVariants}, nil
 	}
 
 	sort.SliceStable(candidates, func(i, j int) bool {
@@ -124,7 +127,7 @@ func (s *Server) retrieveForChatV2(
 		ranked = ranked[:topK]
 	}
 
-	return ranked, retrievalV2Debug{Analysis: analysis, QueryVariants: variants}, nil
+	return ranked, retrievalV2Debug{Analysis: analysis, QueryVariants: variants, DenseVariants: denseVariants}, nil
 }
 
 func analyzeQuery(query string) queryAnalysis {
@@ -149,6 +152,7 @@ func analyzeQuery(query string) queryAnalysis {
 		NeedsRewrite:             len(filteredTokens) <= 4 || queryType == "comparison",
 		NeedsExpansion:           len(filteredTokens) <= 3 || queryType == "comparison" || queryType == "policy",
 		NeedsMultiEntityCoverage: queryType == "comparison",
+		IsShortQuery:             len(filteredTokens) <= 3,
 		Entities:                 filteredTokens,
 	}
 	if len(analysis.Entities) > 4 {
@@ -158,23 +162,26 @@ func analyzeQuery(query string) queryAnalysis {
 }
 
 func (s *Server) buildQueryVariants(ctx context.Context, query string, analysis queryAnalysis) []string {
-	variants := []string{strings.TrimSpace(query)}
-	if strings.TrimSpace(query) == "" {
+	trimmedQuery := strings.TrimSpace(query)
+	if trimmedQuery == "" {
 		return nil
 	}
 
+	variants := []string{trimmedQuery}
+	variants = append(variants, heuristicQueryVariants(trimmedQuery, analysis)...)
+
 	if s.queryRewriteEnabled && analysis.NeedsRewrite {
-		if rewritten := s.generateLLMQueryVariants(ctx, query, analysis, 1); len(rewritten) > 0 {
+		if rewritten := s.generateLLMQueryVariants(ctx, trimmedQuery, analysis, 1); len(rewritten) > 0 {
 			variants = append(variants, rewritten...)
 		}
 	}
 	if s.queryExpandEnabled && analysis.NeedsExpansion {
-		if expanded := s.generateLLMQueryVariants(ctx, query, analysis, 3); len(expanded) > 0 {
+		if expanded := s.generateLLMQueryVariants(ctx, trimmedQuery, analysis, 3); len(expanded) > 0 {
 			variants = append(variants, expanded...)
 		}
 	}
 
-	return dedupeStrings(variants)
+	return filterQueryVariants(trimmedQuery, analysis, variants)
 }
 
 func (s *Server) generateLLMQueryVariants(ctx context.Context, query string, analysis queryAnalysis, limit int) []string {
@@ -216,7 +223,50 @@ func (s *Server) generateLLMQueryVariants(ctx context.Context, query string, ana
 	if len(parsed.Queries) > limit {
 		parsed.Queries = parsed.Queries[:limit]
 	}
-	return dedupeStrings(parsed.Queries)
+	return filterQueryVariants(query, analysis, parsed.Queries)
+}
+
+func (s *Server) buildDenseQueryVariants(ctx context.Context, query string, analysis queryAnalysis, variants []string) []string {
+	denseVariants := append([]string(nil), variants...)
+	if !s.hydeEnabled {
+		return denseVariants
+	}
+
+	if hydeVariant := s.generateHyDEVariant(ctx, query, analysis); hydeVariant != "" {
+		denseVariants = append(denseVariants, hydeVariant)
+	}
+	return dedupeStrings(denseVariants)
+}
+
+func (s *Server) generateHyDEVariant(ctx context.Context, query string, analysis queryAnalysis) string {
+	if s.llm == nil {
+		return ""
+	}
+	provider, option, ok := s.llm.Resolve("")
+	if !ok || provider == nil {
+		return ""
+	}
+
+	prompt := fmt.Sprintf(
+		"Write a short hypothetical answer for retrieval expansion. Preserve names, dates, numbers, and entities. Query type: %s. Question: %s",
+		analysis.QueryType,
+		query,
+	)
+	response, err := provider.Complete(ctx, llm.CompletionRequest{
+		Mode: "strict",
+		Messages: []llm.Message{
+			{Role: "system", Content: "Generate one concise hypothetical answer paragraph for dense retrieval only. Do not mention that it is hypothetical."},
+			{Role: "user", Content: prompt},
+		},
+		Model:       option.DefaultModel,
+		MaxTokens:   180,
+		Temperature: 0.2,
+	})
+	if err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(response)
 }
 
 func (s *Server) collectDenseCandidates(ctx context.Context, user store.User, variants []string, candidateK int) ([]fusedCandidate, error) {
@@ -395,26 +445,257 @@ func ensureMultiDocumentCoverage(chunks []store.RetrievalChunk, analysis queryAn
 		return chunks
 	}
 
-	primaryDoc := strings.TrimSpace(chunks[0].DocumentID)
-	if primaryDoc == "" {
+	selected := make([]store.RetrievalChunk, 0, len(chunks))
+	used := make([]bool, len(chunks))
+
+	entityTargets := normalizedCoverageEntities(analysis.Entities)
+	docSeen := make(map[string]struct{})
+	for _, entity := range entityTargets {
+		bestIndex := -1
+		bestScore := -1
+		for index, chunk := range chunks {
+			if used[index] {
+				continue
+			}
+			score := chunkEntityCoverageScore(chunk, entity)
+			if score > bestScore {
+				bestScore = score
+				bestIndex = index
+			}
+		}
+		if bestIndex >= 0 && bestScore > 0 {
+			selected = append(selected, chunks[bestIndex])
+			used[bestIndex] = true
+			if docID := strings.TrimSpace(chunks[bestIndex].DocumentID); docID != "" {
+				docSeen[docID] = struct{}{}
+			}
+		}
+	}
+
+	if len(docSeen) < 2 {
+		for index, chunk := range chunks {
+			if used[index] {
+				continue
+			}
+			docID := strings.TrimSpace(chunk.DocumentID)
+			if docID == "" {
+				continue
+			}
+			if _, exists := docSeen[docID]; exists {
+				continue
+			}
+			selected = append(selected, chunk)
+			used[index] = true
+			docSeen[docID] = struct{}{}
+			if len(docSeen) >= 2 {
+				break
+			}
+		}
+	}
+
+	if len(selected) == 0 {
 		return chunks
 	}
 
-	for _, chunk := range chunks[1:] {
-		if strings.TrimSpace(chunk.DocumentID) != primaryDoc {
-			return chunks
-		}
-	}
-
-	for index := 1; index < len(chunks); index++ {
-		if strings.TrimSpace(chunks[index].DocumentID) == primaryDoc {
+	for index, chunk := range chunks {
+		if used[index] {
 			continue
 		}
-		chunks[1], chunks[index] = chunks[index], chunks[1]
-		break
+		selected = append(selected, chunk)
 	}
 
-	return chunks
+	return selected
+}
+
+func normalizedCoverageEntities(values []string) []string {
+	entities := make([]string, 0, len(values))
+	seen := make(map[string]struct{})
+	for _, value := range values {
+		entity := strings.TrimSpace(strings.ToLower(value))
+		if entity == "" || isLikelyStopword(entity) {
+			continue
+		}
+		if _, exists := seen[entity]; exists {
+			continue
+		}
+		seen[entity] = struct{}{}
+		entities = append(entities, entity)
+	}
+	if len(entities) > 3 {
+		entities = entities[:3]
+	}
+	return entities
+}
+
+func heuristicQueryVariants(query string, analysis queryAnalysis) []string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+
+	variants := make([]string, 0, 6)
+	entityTargets := normalizedCoverageEntities(analysis.Entities)
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || strings.EqualFold(value, query) {
+			return
+		}
+		variants = append(variants, value)
+	}
+
+	switch analysis.QueryType {
+	case "comparison":
+		if len(entityTargets) >= 2 {
+			left := entityTargets[0]
+			right := entityTargets[1]
+			add(fmt.Sprintf("%s vs %s", left, right))
+			add(fmt.Sprintf("difference between %s and %s", left, right))
+			add(fmt.Sprintf("сравнение %s и %s", left, right))
+		}
+	case "definition":
+		if analysis.IsShortQuery && len(entityTargets) > 0 {
+			entity := entityTargets[0]
+			add(fmt.Sprintf("что такое %s", entity))
+			add(fmt.Sprintf("%s definition", entity))
+		}
+	case "procedure":
+		if len(entityTargets) > 0 {
+			entity := entityTargets[0]
+			add(fmt.Sprintf("how to configure %s", entity))
+			add(fmt.Sprintf("как настроить %s", entity))
+		}
+	case "policy":
+		if len(entityTargets) > 0 {
+			entity := entityTargets[0]
+			add(fmt.Sprintf("policy for %s", entity))
+			add(fmt.Sprintf("правила %s", entity))
+		}
+	case "general":
+		if analysis.IsShortQuery && len(entityTargets) > 0 {
+			entity := entityTargets[0]
+			add(fmt.Sprintf("что такое %s", entity))
+			add(fmt.Sprintf("%s definition", entity))
+			add(fmt.Sprintf("как работает %s", entity))
+		}
+	}
+
+	if analysis.IsShortQuery {
+		for _, entity := range entityTargets {
+			add(entity)
+			for _, variant := range expandTopicalVariants(entity) {
+				add(variant)
+			}
+		}
+	}
+
+	return dedupeStrings(variants)
+}
+
+func filterQueryVariants(query string, analysis queryAnalysis, variants []string) []string {
+	baseTokens := criticalQueryTokens(query, analysis)
+	filtered := make([]string, 0, len(variants))
+	seen := make(map[string]struct{})
+
+	for _, variant := range variants {
+		normalized := strings.TrimSpace(variant)
+		if normalized == "" {
+			continue
+		}
+		key := strings.ToLower(normalized)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		if !variantPreservesCriticalTerms(normalized, baseTokens) {
+			continue
+		}
+		seen[key] = struct{}{}
+		filtered = append(filtered, normalized)
+		if len(filtered) == 5 {
+			break
+		}
+	}
+
+	if len(filtered) == 0 {
+		return []string{strings.TrimSpace(query)}
+	}
+	return filtered
+}
+
+func criticalQueryTokens(query string, analysis queryAnalysis) []string {
+	out := make([]string, 0, 8)
+	seen := make(map[string]struct{})
+	add := func(value string) {
+		value = strings.TrimSpace(strings.ToLower(value))
+		if value == "" {
+			return
+		}
+		if _, exists := seen[value]; exists {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+
+	for _, entity := range normalizedCoverageEntities(analysis.Entities) {
+		add(entity)
+	}
+	for _, token := range tokenizeQuery(query) {
+		token = strings.TrimSpace(strings.ToLower(token))
+		if token == "" {
+			continue
+		}
+		hasDigit := strings.IndexFunc(token, func(r rune) bool { return r >= '0' && r <= '9' }) >= 0
+		if hasDigit || len([]rune(token)) >= 4 {
+			add(token)
+		}
+	}
+	return out
+}
+
+func variantPreservesCriticalTerms(variant string, criticalTokens []string) bool {
+	if len(criticalTokens) == 0 {
+		return true
+	}
+	normalized := strings.ToLower(strings.TrimSpace(variant))
+	matched := 0
+	for _, token := range criticalTokens {
+		if strings.Contains(normalized, token) {
+			matched++
+		}
+	}
+	required := minInt(2, len(criticalTokens))
+	if required <= 0 {
+		required = 1
+	}
+	return matched >= required
+}
+
+func chunkEntityCoverageScore(chunk store.RetrievalChunk, entity string) int {
+	if strings.TrimSpace(entity) == "" {
+		return 0
+	}
+
+	score := 0
+	content := strings.ToLower(firstNonEmptyString(chunk.ParentContent, chunk.Content))
+	title := strings.ToLower(chunk.DocTitle)
+	filename := strings.ToLower(chunk.DocFilename)
+	section := strings.ToLower(firstNonEmptyString(metadataString(chunk.Metadata, "section"), metadataString(chunk.ParentMetadata, "section")))
+
+	score += countOccurrences(content, entity) * 3
+	score += countOccurrences(title, entity) * 2
+	score += countOccurrences(section, entity) * 2
+	score += countOccurrences(filename, entity)
+	if score == 0 {
+		return 0
+	}
+
+	if chunk.RerankScore > 0 {
+		score += 2
+	}
+	if chunk.RRFScore > 0 {
+		score += 1
+	}
+	return score
 }
 
 func sortChunksByScore(chunks []store.RetrievalChunk) {

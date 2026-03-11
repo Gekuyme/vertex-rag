@@ -1,0 +1,338 @@
+{
+  "documents": [
+    {
+      "alias": "doc-go-strings",
+      "title": "Go strings",
+      "filename": "go-strings.md",
+      "sections": [
+        {
+          "heading": "Definition",
+          "content": "Строка в Go, тип string, это неизменяемая последовательность байт. По соглашению строки обычно содержат UTF-8 text, но на уровне типа string хранит bytes. Для exact fact retrieval важно помнить формулировку: string in Go is an immutable sequence of bytes."
+        }
+      ]
+    },
+    {
+      "alias": "doc-auth-policy",
+      "title": "Auth policy",
+      "filename": "auth-policy.md",
+      "sections": [
+        {
+          "heading": "Token lifetime",
+          "content": "Access token живет 15 минут. Это короткий credential для API calls. Refresh token используется отдельно и описан в session auth guide. Для security policy access token всегда передается как bearer token и истекает быстро."
+        }
+      ]
+    },
+    {
+      "alias": "doc-session-auth",
+      "title": "Session auth",
+      "filename": "session-auth.md",
+      "sections": [
+        {
+          "heading": "Refresh tokens",
+          "content": "Refresh token живет 30 дней, то есть 720 часов. При каждом refresh token rotation сервер выдает новую пару access token и refresh token, а предыдущая refresh session помечается как rotated. Чтобы ротировать refresh token, клиент вызывает POST /auth/refresh и заменяет cookie новой value."
+        }
+      ]
+    },
+    {
+      "alias": "doc-api-auth",
+      "title": "API auth",
+      "filename": "api-auth.md",
+      "sections": [
+        {
+          "heading": "Headers",
+          "content": "Access token передается в HTTP заголовке Authorization в формате Bearer <token>. Для admin debug endpoints и chat endpoints используется тот же Authorization header."
+        }
+      ]
+    },
+    {
+      "alias": "doc-rbac-guide",
+      "title": "RBAC guide",
+      "filename": "rbac-guide.md",
+      "sections": [
+        {
+          "heading": "Roles and permissions",
+          "content": "Owner role может загружать документы, управлять ролями и пользователями и использовать unstrict mode. Member role по умолчанию тоже может загружать документы, потому что у нее есть permission can_upload_docs. Permission для unstrict режима называется can_use_unstrict. Приватные документы видят только пользователи, чьи role IDs входят в allowed_role_ids документа."
+        },
+        {
+          "heading": "Restricted access",
+          "content": "Чтобы выдать доступ к документу только одной роли, при загрузке нужно установить allowed_role_ids только на нужную роль. Owner и Admin могут менять roles. Member cannot manage roles, but can still upload docs when upload permission is enabled."
+        }
+      ]
+    },
+    {
+      "alias": "doc-security-policy",
+      "title": "Security policy",
+      "filename": "security-policy.md",
+      "sections": [
+        {
+          "heading": "Secrets and passwords",
+          "content": "Нельзя отправлять секреты в чат и нельзя хранить пароли в открытом виде. Passwords must be stored only as password hashes. Для enterprise tenants MFA обязательна. Чтобы включить MFA, администратор открывает identity settings, включает policy Require MFA for enterprise tenants и заново подтверждает sign-in."
+        }
+      ]
+    },
+    {
+      "alias": "doc-document-lifecycle",
+      "title": "Document lifecycle",
+      "filename": "document-lifecycle.md",
+      "sections": [
+        {
+          "heading": "Statuses",
+          "content": "После успешной индексации и ingest статус документа становится ready. Typical lifecycle: uploaded -> processing -> ready. Если ingest падает, статус можно вернуть в failed и затем reingest document."
+        }
+      ]
+    },
+    {
+      "alias": "doc-local-stack",
+      "title": "Local stack",
+      "filename": "local-stack.md",
+      "sections": [
+        {
+          "heading": "Ports",
+          "content": "OpenSearch в локальном compose stack слушает порт 9200. API по умолчанию слушает 8080, worker 8082, reranker sidecar публикуется на 8083, а Ollama на 11434."
+        }
+      ]
+    },
+    {
+      "alias": "doc-retrieval-v2",
+      "title": "Retrieval v2",
+      "filename": "retrieval-v2.md",
+      "sections": [
+        {
+          "heading": "Pipeline",
+          "content": "Retrieval v2 combines dense retrieval from pgvector with sparse BM25 retrieval from OpenSearch. Candidate fusion uses Reciprocal Rank Fusion with k=60. The default reranker model is BAAI/bge-reranker-v2-m3. RRF fusion is not the same thing as reranking: fusion merges ranks from dense and sparse retrieval, while reranker reorders the top candidate set with a cross-encoder."
+        }
+      ]
+    },
+    {
+      "alias": "doc-parent-child-schema",
+      "title": "Parent child schema",
+      "filename": "parent-child-schema.md",
+      "sections": [
+        {
+          "heading": "Schema",
+          "content": "Parent sections хранятся в таблице document_sections. Child chunks живут в document_chunks и ссылаются на parent_section_id. Parent-child chunking позволяет искать по маленькому child chunk, а в LLM отдавать большой parent context. Citation span берется из child offsets внутри parent section."
+        }
+      ]
+    },
+    {
+      "alias": "doc-kb-versioning",
+      "title": "KB versioning",
+      "filename": "kb-versioning.md",
+      "sections": [
+        {
+          "heading": "Cache invalidation",
+          "content": "После reingest увеличивается organization kb_version. Retrieval cache и answer cache могут использовать kb_version как часть cache key, чтобы invalidation происходил автоматически после изменения знаний."
+        }
+      ]
+    },
+    {
+      "alias": "doc-sso-overview",
+      "title": "SSO overview",
+      "filename": "sso-overview.md",
+      "sections": [
+        {
+          "heading": "Overview",
+          "content": "SSO, single sign-on, lets users authenticate once through an identity provider and then access the product without local passwords for every app. In this system SSO is an identity integration pattern, not the same thing as OAuth token exchange."
+        }
+      ]
+    },
+    {
+      "alias": "doc-oauth-overview",
+      "title": "OAuth overview",
+      "filename": "oauth-overview.md",
+      "sections": [
+        {
+          "heading": "Overview",
+          "content": "OAuth is an authorization framework. OAuth focuses on delegated access and token issuance, while SSO focuses on login experience. OAuth commonly produces access tokens and refresh tokens; SSO may rely on SAML or OIDC login flows."
+        }
+      ]
+    },
+    {
+      "alias": "doc-audit-policy",
+      "title": "Audit policy",
+      "filename": "audit-policy.md",
+      "sections": [
+        {
+          "heading": "Audit logging",
+          "content": "Audit log records document uploads, role changes, sign-in events and admin retrieval debug access. Audit logging is part of compliance evidence and should be enabled for production organizations."
+        }
+      ]
+    },
+    {
+      "alias": "doc-retention-policy",
+      "title": "Retention policy",
+      "filename": "retention-policy.md",
+      "sections": [
+        {
+          "heading": "Retention",
+          "content": "Retention policy defines how long logs, sessions and exported answers are kept. Audit records are retained for 180 days in the default policy. Retention must be explicit to avoid conflicting lifecycle rules."
+        }
+      ]
+    },
+    {
+      "alias": "doc-strict-answering",
+      "title": "Strict answering",
+      "filename": "strict-answering.md",
+      "sections": [
+        {
+          "heading": "Grounded mode",
+          "content": "Strict mode must answer only from the knowledge base and attach citations [N]. If the retrieved evidence is insufficient, the system must honestly say it does not know instead of hallucinating. Citation spans should point to the exact supporting child fragment within the parent section."
+        }
+      ]
+    },
+    {
+      "alias": "doc-unstrict-mode",
+      "title": "Unstrict mode",
+      "filename": "unstrict-mode.md",
+      "sections": [
+        {
+          "heading": "External context",
+          "content": "Web search may be used only in unstrict mode and only when the user role allows external search behavior. Web context is not an internal company source; it is external context and must be treated separately from internal knowledge base evidence."
+        }
+      ]
+    },
+    {
+      "alias": "doc-abac-guide",
+      "title": "ABAC guide",
+      "filename": "abac-guide.md",
+      "sections": [
+        {
+          "heading": "Attribute-based access",
+          "content": "ABAC, attribute-based access control, grants access based on attributes such as department, region or document label. RBAC uses explicit roles like Owner, Admin, Member or Viewer. RBAC is simpler to reason about, while ABAC is more dynamic and policy-driven."
+        }
+      ]
+    },
+    {
+      "alias": "doc-openai-provider",
+      "title": "OpenAI provider",
+      "filename": "openai-provider.md",
+      "sections": [
+        {
+          "heading": "Provider behavior",
+          "content": "The OpenAI provider uses OpenAI-compatible HTTP APIs and commonly defaults to models like gpt-4o-mini for chat or text-embedding-3-small for embeddings. In this project it is configured through OPENAI_API_KEY and OPENAI_BASE_URL."
+        }
+      ]
+    },
+    {
+      "alias": "doc-gemini-provider",
+      "title": "Gemini provider",
+      "filename": "gemini-provider.md",
+      "sections": [
+        {
+          "heading": "Provider behavior",
+          "content": "The Gemini provider uses Google's Generative Language API. In this project Gemini is commonly used for gemini-2.5-flash-lite chat and gemini-embedding-001 embeddings. Compared with OpenAI, Gemini uses a different base URL and different model names."
+        }
+      ]
+    },
+    {
+      "alias": "doc-late-chunking-notes",
+      "title": "Late chunking notes",
+      "filename": "late-chunking-notes.md",
+      "sections": [
+        {
+          "heading": "Research notes",
+          "content": "Late chunking means you first embed the whole document representation and then derive smaller retrieval units later. Parent-child chunking is more operational today: retrieve child chunks, return parent context. Late chunking stays a research follow-up and is not the default v1 rollout."
+        }
+      ]
+    },
+    {
+      "alias": "doc-dense-retrieval",
+      "title": "Dense retrieval",
+      "filename": "dense-retrieval.md",
+      "sections": [
+        {
+          "heading": "Vector search",
+          "content": "Dense retrieval uses embeddings and vector similarity in pgvector. Vector search is strong for semantic similarity and paraphrases, but can be weak on exact facts such as names, dates and numbers when lexical overlap matters."
+        }
+      ]
+    },
+    {
+      "alias": "doc-sparse-retrieval",
+      "title": "Sparse retrieval",
+      "filename": "sparse-retrieval.md",
+      "sections": [
+        {
+          "heading": "BM25 search",
+          "content": "Sparse retrieval uses lexical matching such as BM25 in OpenSearch. BM25 is strong on exact terms, names, dates, and configuration keys. In the retrieval pipeline OpenSearch complements pgvector; pgvector handles semantics while OpenSearch handles exact lexical evidence."
+        }
+      ]
+    },
+    {
+      "alias": "doc-owner-bootstrap",
+      "title": "Owner bootstrap",
+      "filename": "owner-bootstrap.md",
+      "sections": [
+        {
+          "heading": "First owner",
+          "content": "The first organization and owner account are created through POST /auth/register_owner. This bootstrap flow creates the organization, default roles, and the initial Owner user. Owner differs from Member because Owner can manage users, roles and document policy."
+        }
+      ]
+    },
+    {
+      "alias": "doc-reranker-design",
+      "title": "Reranker design",
+      "filename": "reranker-design.md",
+      "sections": [
+        {
+          "heading": "Sidecar",
+          "content": "To configure the reranker sidecar, run the text-embeddings-inference container with the cross-encoder model and point RERANKER_URL to that HTTP service. Reranker is the second stage after dense plus sparse candidate collection. It is different from RRF because it scores query-document relevance directly."
+        }
+      ]
+    },
+    {
+      "alias": "doc-cache-design",
+      "title": "Cache design",
+      "filename": "cache-design.md",
+      "sections": [
+        {
+          "heading": "Retrieval cache",
+          "content": "Cache invalidation uses kb_version to avoid stale retrieval results after document changes. Retrieval cache stores chunks, and answer cache stores final responses. When kb_version changes after reingest, previous cache entries must stop matching."
+        }
+      ]
+    },
+    {
+      "alias": "doc-document-ingest",
+      "title": "Document ingest",
+      "filename": "document-ingest.md",
+      "sections": [
+        {
+          "heading": "Upload flow",
+          "content": "To upload a document into the knowledge base, call POST /documents/upload with multipart form data and choose allowed roles. To re-run ingest for one file use POST /documents/{id}/reingest. To re-run ingest for all files use POST /documents/reingest_all."
+        }
+      ]
+    },
+    {
+      "alias": "doc-user-settings",
+      "title": "User settings",
+      "filename": "user-settings.md",
+      "sections": [
+        {
+          "heading": "Default mode",
+          "content": "A user can change the default mode in user settings. The product stores preferred chat mode and preferred LLM provider or model in user settings. To change default mode, open settings and patch the preferred mode field."
+        }
+      ]
+    },
+    {
+      "alias": "doc-sso-setup",
+      "title": "SSO setup",
+      "filename": "sso-setup.md",
+      "sections": [
+        {
+          "heading": "Configuration steps",
+          "content": "Чтобы настроить SSO, сначала зарегистрируйте приложение в identity provider, затем добавьте redirect URI, импортируйте metadata или discovery URL, проверьте claim mapping и включите обязательную domain verification. After setup, test sign-in with a pilot group before global rollout."
+        }
+      ]
+    },
+    {
+      "alias": "doc-api-operations",
+      "title": "API operations",
+      "filename": "api-operations.md",
+      "sections": [
+        {
+          "heading": "Operational limits",
+          "content": "API rate limit controls requests per minute and burst capacity. Rate limit settings are configured through RATE_LIMIT_RPM and RATE_LIMIT_BURST. Operational docs also cover health checks, startup order and admin debug access."
+        }
+      ]
+    }
+  ]
+}

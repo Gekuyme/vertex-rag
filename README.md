@@ -25,6 +25,7 @@ The project is designed for teams that need more than a demo chatbot: document a
 - Role and user administration with fine-grained permissions.
 - Retrieval and answer caching keyed by organization, role, query, mode, and knowledge-base version.
 - Smoke and integration checks for ACL behavior, mode switching, PDF ingestion, retrieval stability, and cache speed.
+- Offline retrieval evaluation scaffold for saved debug payloads without model-backed smoke runs.
 
 ## Architecture
 
@@ -234,8 +235,12 @@ Unit and e2e coverage already exist for key flows.
 - `make smoke-retrieval-stability`
 - `make smoke-cache-speed`
 - `make smoke-query-matrix`
+- `python3 scripts/retrieval_offline_eval.py --cases docs/evals/retrieval_eval_seed.json --results <saved-results.json>`
+- `python3 scripts/retrieval_collect_debug.py --cases docs/evals/retrieval_eval_seed.json --output-dir tmp/evals/v2 --pipeline-version v2`
+- `make seed-eval-corpus`
 
 Script details are documented in [scripts/README.md](scripts/README.md).
+Low-cost retrieval evaluation workflow is documented in [docs/evals/README.md](docs/evals/README.md).
 
 ## Self-hosting
 
@@ -258,6 +263,7 @@ Near-term priorities:
 
 - improve public docs and examples for contributors
 - expand automated tests around retrieval quality and failure handling
+- grow the offline retrieval eval set from the current seed scaffold to a real benchmark set
 - add public evaluation datasets and benchmarks for strict-answer workflows
 - improve observability around ingestion, retrieval, and latency
 - keep provider integrations interchangeable across local and hosted setups

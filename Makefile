@@ -9,7 +9,7 @@ COMPOSE_SELFHOST := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE)
 	migrate migrate-extensions migrate-auth migrate-docs migrate-kb-version migrate-embedding-vector migrate-chat-settings migrate-unstrict-backfill migrate-hnsw-index migrate-user-settings-llm migrate-document-sections reingest-all \
 	test test-api test-worker test-integration test-integration-acl test-integration-mode test-integration-pdf test-integration-retrieval test-integration-cache \
 	test-e2e \
-	build-web dev-web health smoke-user smoke-role-acl smoke-mode-toggle smoke-pdf-ingest smoke-retrieval-stability smoke-cache-speed smoke-query-matrix smoke-query-matrix-lite up-selfhost pull-selfhost
+	build-web dev-web health smoke-user smoke-role-acl smoke-mode-toggle smoke-pdf-ingest smoke-retrieval-stability smoke-grounding-debug smoke-cache-speed smoke-query-matrix smoke-query-matrix-lite smoke-query-matrix-micro smoke-retrieval-stability-lowquota retrieval-eval-collect retrieval-eval-offline seed-eval-corpus up-selfhost pull-selfhost
 
 help:
 	@echo "Available targets:"
@@ -43,9 +43,15 @@ help:
 	@echo "  make smoke-mode-toggle   - Run in-flight mode toggle smoke scenario"
 	@echo "  make smoke-pdf-ingest    - Run PDF ingest readiness smoke scenario"
 	@echo "  make smoke-retrieval-stability - Run retrieval stability smoke scenario"
+	@echo "  make smoke-grounding-debug - Run retrieval debug grounding/contradiction smoke"
 	@echo "  make smoke-cache-speed   - Run strict cache speed smoke scenario"
 	@echo "  make smoke-query-matrix  - Run query matrix across modes and speed profiles"
 	@echo "  make smoke-query-matrix-lite - Run reduced query matrix for quota-limited providers"
+	@echo "  make smoke-query-matrix-micro - Run quota-friendly query matrix with pacing"
+	@echo "  make smoke-retrieval-stability-lowquota - Run retrieval smoke with fewer repeats and pacing"
+	@echo "  make retrieval-eval-collect - Collect throttled retrieval debug results for offline eval"
+	@echo "  make retrieval-eval-offline - Evaluate saved retrieval results without API/model calls"
+	@echo "  make seed-eval-corpus      - Seed isolated retrieval eval corpus into local DB/OpenSearch"
 	@echo "  make build-web           - Build Next.js app"
 	@echo "  make dev-web             - Run Next.js dev server locally (HMR)"
 	@echo "  make health              - Check API and Worker health"
@@ -187,6 +193,9 @@ smoke-pdf-ingest:
 smoke-retrieval-stability:
 	./scripts/smoke_retrieval_stability.sh
 
+smoke-grounding-debug:
+	./scripts/smoke_grounding_debug.sh
+
 smoke-cache-speed:
 	./scripts/smoke_cache_speed.sh
 
@@ -198,3 +207,18 @@ smoke-query-matrix:
 
 smoke-query-matrix-lite:
 	QUERY_SET=lite CASE_SET=lite ./scripts/smoke_query_matrix.sh
+
+smoke-query-matrix-micro:
+	LOW_QUOTA_MODE=true QUERY_SET=micro CASE_SET=micro LLM_RPM_LIMIT=$${LLM_RPM_LIMIT:-10} ./scripts/smoke_query_matrix.sh
+
+smoke-retrieval-stability-lowquota:
+	LOW_QUOTA_MODE=true STABILITY_REPEATS=2 LLM_RPM_LIMIT=$${LLM_RPM_LIMIT:-10} ./scripts/smoke_retrieval_stability.sh
+
+retrieval-eval-collect:
+	python3 scripts/retrieval_collect_debug.py --cases $${CASES:-docs/evals/retrieval_eval_seed.json} --output-dir $${OUTPUT_DIR:?set OUTPUT_DIR=/path/to/output-dir} --pipeline-version $${PIPELINE_VERSION:-v2} --delay-seconds $${DELAY_SECONDS:-1.0}
+
+retrieval-eval-offline:
+	python3 scripts/retrieval_offline_eval.py --cases $${CASES:-docs/evals/retrieval_eval_seed.json} --results $${RESULTS:?set RESULTS=/path/to/results.json-or-dir}
+
+seed-eval-corpus:
+	cd apps/api && go run ./cmd/seed_eval_corpus --corpus ../../docs/evals/retrieval_eval_corpus.json --org-name "$${EVAL_ORG_NAME:-Eval Lab}" --owner-email "$${OWNER_EMAIL:-eval@vertex.local}" --owner-password "$${OWNER_PASSWORD:-Password123!}" --reset=$${RESET:-true}

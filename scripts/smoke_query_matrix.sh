@@ -8,6 +8,9 @@ OWNER_EMAIL="${OWNER_EMAIL:-smoke@vertex.local}"
 OWNER_PASSWORD="${OWNER_PASSWORD:-Password123!}"
 QUERY_SET="${QUERY_SET:-full}"
 CASE_SET="${CASE_SET:-full}"
+LLM_RPM_LIMIT="${LLM_RPM_LIMIT:-0}"
+REQUEST_DELAY_SECONDS="${REQUEST_DELAY_SECONDS:-0}"
+LOW_QUOTA_MODE="${LOW_QUOTA_MODE:-false}"
 
 require_bin() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -25,6 +28,33 @@ cleanup() {
   rm -f "$results_file"
 }
 trap cleanup EXIT
+
+if [[ "$LOW_QUOTA_MODE" == "true" ]]; then
+  if [[ "$QUERY_SET" == "full" ]]; then
+    QUERY_SET="micro"
+  fi
+  if [[ "$CASE_SET" == "full" ]]; then
+    CASE_SET="micro"
+  fi
+  if [[ "$LLM_RPM_LIMIT" == "0" ]]; then
+    LLM_RPM_LIMIT=10
+  fi
+fi
+
+apply_rate_limit() {
+  local delay="$REQUEST_DELAY_SECONDS"
+  if [[ "$LLM_RPM_LIMIT" =~ ^[0-9]+$ ]] && [[ "$LLM_RPM_LIMIT" -gt 0 ]]; then
+    delay="$(python3 - "$LLM_RPM_LIMIT" <<'PY'
+import sys
+rpm = int(sys.argv[1])
+print(f"{60.0 / rpm:.2f}")
+PY
+)"
+  fi
+  if [[ "$delay" != "0" && "$delay" != "0.0" && "$delay" != "0.00" ]]; then
+    sleep "$delay"
+  fi
+}
 
 token="$AUTH_TOKEN"
 if [[ -z "$token" ]]; then
@@ -192,7 +222,13 @@ classify_query_type() {
   esac
 }
 
-if [[ "$QUERY_SET" == "lite" ]]; then
+if [[ "$QUERY_SET" == "micro" ]]; then
+  declare -a queries=(
+    "что такое строки"
+    "как создать канал"
+    "чем срез отличается от массива"
+  )
+elif [[ "$QUERY_SET" == "lite" ]]; then
   declare -a queries=(
     "что такое строки"
     "что такое горутины"
@@ -218,7 +254,12 @@ else
   )
 fi
 
-if [[ "$CASE_SET" == "lite" ]]; then
+if [[ "$CASE_SET" == "micro" ]]; then
+  declare -a cases=(
+    "strict balanced 6 20"
+    "unstrict balanced 6 20"
+  )
+elif [[ "$CASE_SET" == "lite" ]]; then
   declare -a cases=(
     "strict balanced 8 32"
     "unstrict balanced 8 32"
@@ -239,6 +280,7 @@ echo "==> Query matrix"
 print_header
 for query in "${queries[@]}"; do
   for case_def in "${cases[@]}"; do
+    apply_rate_limit
     # shellcheck disable=SC2086
     json="$(run_case ${case_def} "$query")"
     printf '%s\n' "$json" >>"$results_file"

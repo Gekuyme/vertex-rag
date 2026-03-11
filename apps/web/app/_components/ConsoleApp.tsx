@@ -87,12 +87,52 @@ type Citation = {
   doc_title: string;
   doc_filename: string;
   snippet: string;
+  evidence_span?: string;
   page?: number;
   section?: string;
+  parent_id?: string;
+  offsets?: Record<string, number>;
   vector_score?: number;
   text_score?: number;
   score?: number;
+  dense_rank?: number;
+  sparse_rank?: number;
+  rrf_score?: number;
+  rerank_score?: number;
+  query_variant?: string;
+  retrievers_used?: string[];
   metadata?: Record<string, unknown>;
+};
+
+type GroundingDocument = {
+  document_id: string;
+  doc_title: string;
+  doc_filename: string;
+  citation_count: number;
+};
+
+type ContradictionSignal = {
+  type: string;
+  summary: string;
+  document_ids: string[];
+};
+
+type GroundingSummary = {
+  confidence: number;
+  confidence_label: string;
+  confidence_reasons: string[];
+  multi_document: boolean;
+  document_count: number;
+  documents: GroundingDocument[];
+  contradictions: ContradictionSignal[];
+};
+
+type MessageResponsePayload = {
+  mode: "strict" | "unstrict";
+  user_message: ChatMessage;
+  assistant_message: ChatMessage;
+  citations: Citation[];
+  grounding?: GroundingSummary;
 };
 
 type ChatMessage = {
@@ -121,6 +161,7 @@ type StreamDonePayload = {
   user_message: ChatMessage;
   assistant_message: ChatMessage;
   citations: Citation[];
+  grounding?: GroundingSummary;
 };
 
 type ResponseProfile = "fast" | "balanced" | "thinking";
@@ -189,6 +230,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
   const [openChatActionsFor, setOpenChatActionsFor] = useState<string | null>(null);
   const [chatRenameTarget, setChatRenameTarget] = useState<Chat | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [assistantGroundingByMessage, setAssistantGroundingByMessage] = useState<Record<string, GroundingSummary>>({});
   const [draftMessage, setDraftMessage] = useState("");
   const [renameChatTitle, setRenameChatTitle] = useState("");
   const [llmProviders, setLLMProviders] = useState<LLMProviderOption[]>([]);
@@ -1010,6 +1052,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setChats([created]);
     setActiveChatID(created.id);
     setChatMessages([]);
+    setAssistantGroundingByMessage({});
   }
 
   async function loadChatMessages(accessToken: string, chatID: string) {
@@ -1024,6 +1067,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       });
       if (chatLoadAbortRef.current === controller) {
         setChatMessages(response.messages);
+        setAssistantGroundingByMessage({});
       }
     } catch (requestError) {
       if (!isAbortError(requestError)) {
@@ -1210,6 +1254,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
       setChats((current) => [created, ...current]);
       setActiveChatID(created.id);
       setChatMessages([]);
+      setAssistantGroundingByMessage({});
       setView("chat");
       setIsNavOpen(false);
       setMessage(messages.feedback.newChatCreated);
@@ -1341,6 +1386,12 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
         }
         return nextMessages;
       });
+      if (response.grounding) {
+        setAssistantGroundingByMessage((current) => ({
+          ...current,
+          [response.assistant_message.id]: response.grounding as GroundingSummary
+        }));
+      }
       resetStreamingAssistant();
       // Refresh list so sidebar ordering stays accurate, but keep active chat and local messages.
       void refreshChats(token).catch(() => {});
@@ -1431,6 +1482,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
         setChats([created]);
         setActiveChatID(created.id);
         setChatMessages([]);
+        setAssistantGroundingByMessage({});
       } else {
         const nextChatID = list[0].id;
         setActiveChatID(nextChatID);
@@ -1727,6 +1779,7 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
     setChats([]);
     setActiveChatID("");
     setChatMessages([]);
+    setAssistantGroundingByMessage({});
     setDraftMessage("");
     resetStreamingAssistant();
     setIsStreamingMessage(false);
@@ -1994,6 +2047,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                             (entry.citations?.length || 0) === 0 && (
                               <div className="chatBubbleHint">{messages.chat.noKnowledgeHint}</div>
                             )}
+                          {entry.role === "assistant" && assistantGroundingByMessage[entry.id] && (
+                            <ChatGroundingPanel grounding={assistantGroundingByMessage[entry.id]} />
+                          )}
                           {entry.role === "assistant" && entry.citations?.length > 0 && (
                             <details className="details">
                               <summary className="detailsSummary">{messages.chat.sources}</summary>
@@ -2010,7 +2066,9 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                                         {citation.doc_title}{" "}
                                         <span className="sourceMeta">({citation.doc_filename})</span>
                                       </div>
-                                      <div className="sourceSnippet">{citation.snippet}</div>
+                                      <div className="sourceSnippet">
+                                        {renderCitationSnippet(citation)}
+                                      </div>
                                     </button>
                                   ))}
                                 </div>
@@ -3041,15 +3099,23 @@ export default function ConsoleApp({ initialView = "chat" }: ConsoleAppProps) {
                   <p><strong>Document ID</strong><br />{activeCitation.document_id}</p>
                   <p><strong>{messages.sourcePreview.page}</strong><br />{activeCitation.page ?? "—"}</p>
                   <p><strong>{messages.sourcePreview.section}</strong><br />{activeCitation.section || "—"}</p>
+                  <p><strong>{messages.sourcePreview.parentSection}</strong><br />{activeCitation.parent_id || "—"}</p>
+                  <p><strong>{messages.sourcePreview.offsets}</strong><br />{activeCitation.offsets ? `${activeCitation.offsets.start ?? "—"}-${activeCitation.offsets.end ?? "—"}` : "—"}</p>
                 </div>
                 <div className="sourcePreviewSnippet">
                   <strong>{messages.sourcePreview.snippet}</strong>
-                  <p>{activeCitation.snippet || messages.sourcePreview.snippetMissing}</p>
+                  <p>{renderCitationSnippet(activeCitation, true)}</p>
                 </div>
                 <div className="sourcePreviewGrid">
                   <p><strong>{messages.sourcePreview.scoring}</strong><br />total: {activeCitation.score?.toFixed(4) ?? "—"}</p>
                   <p><strong>Vector</strong><br />{activeCitation.vector_score?.toFixed(4) ?? "—"}</p>
                   <p><strong>Text</strong><br />{activeCitation.text_score?.toFixed(4) ?? "—"}</p>
+                  <p><strong>{messages.sourcePreview.denseRank}</strong><br />{activeCitation.dense_rank ?? "—"}</p>
+                  <p><strong>{messages.sourcePreview.sparseRank}</strong><br />{activeCitation.sparse_rank ?? "—"}</p>
+                  <p><strong>{messages.sourcePreview.rrfScore}</strong><br />{activeCitation.rrf_score?.toFixed(4) ?? "—"}</p>
+                  <p><strong>{messages.sourcePreview.rerankScore}</strong><br />{activeCitation.rerank_score?.toFixed(4) ?? "—"}</p>
+                  <p><strong>{messages.sourcePreview.queryVariant}</strong><br />{activeCitation.query_variant || "—"}</p>
+                  <p><strong>{messages.sourcePreview.retrievers}</strong><br />{activeCitation.retrievers_used?.join(", ") || "—"}</p>
                   <p><strong>{messages.sourcePreview.documentStatus}</strong><br />{activeCitationDocument ? getTranslatedStatus(activeCitationDocument.status) : messages.sourcePreview.unknown}</p>
                 </div>
                 <div className="settingsRow">
@@ -3266,6 +3332,79 @@ function ChatWorkedDivider({ label }: { label: string }) {
       <span className="chatWorkedDividerLabel">{label}</span>
       <span className="chatWorkedDividerLine" aria-hidden="true"></span>
     </div>
+  );
+}
+
+function ChatGroundingPanel({ grounding }: { grounding: GroundingSummary }) {
+  return (
+    <div className="chatGroundingPanel">
+      <div className="chatGroundingHeader">
+        <span className={`chatGroundingBadge is-${grounding.confidence_label}`}>{grounding.confidence_label}</span>
+        <span className="chatGroundingScore">{Math.round((grounding.confidence || 0) * 100)}%</span>
+        <span className="chatGroundingMeta">
+          {grounding.document_count} doc{grounding.document_count === 1 ? "" : "s"}
+        </span>
+      </div>
+      {grounding.confidence_reasons.length > 0 && (
+        <div className="chatGroundingReasons">
+          {grounding.confidence_reasons.map((reason) => (
+            <span key={reason} className="chatGroundingPill">{reason}</span>
+          ))}
+        </div>
+      )}
+      {grounding.documents.length > 0 && (
+        <div className="chatGroundingDocs">
+          {grounding.documents.map((document) => (
+            <span key={document.document_id} className="chatGroundingDoc">
+              {document.doc_title || document.doc_filename} · {document.citation_count}
+            </span>
+          ))}
+        </div>
+      )}
+      {grounding.contradictions.length > 0 && (
+        <div className="chatGroundingAlert">
+          {grounding.contradictions[0].summary}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function renderCitationSnippet(citation: Citation, expanded = false): ReactNode {
+  const snippet = (citation.snippet || "").trim();
+  const evidence = (citation.evidence_span || "").trim();
+
+  if (!snippet) {
+    return null;
+  }
+  if (!evidence) {
+    return snippet;
+  }
+
+  const normalizedSnippet = snippet.toLowerCase();
+  const normalizedEvidence = evidence.toLowerCase();
+  const matchIndex = normalizedSnippet.indexOf(normalizedEvidence);
+
+  if (matchIndex === -1) {
+    return (
+      <>
+        <span>{snippet}</span>
+        <span className="sourceEvidenceCaption">{expanded ? "Evidence span" : "Evidence"}:</span>{" "}
+        <mark className="sourceEvidenceMark">{evidence}</mark>
+      </>
+    );
+  }
+
+  const before = snippet.slice(0, matchIndex);
+  const matched = snippet.slice(matchIndex, matchIndex + evidence.length);
+  const after = snippet.slice(matchIndex + evidence.length);
+
+  return (
+    <>
+      {before}
+      <mark className="sourceEvidenceMark">{matched}</mark>
+      {after}
+    </>
   );
 }
 

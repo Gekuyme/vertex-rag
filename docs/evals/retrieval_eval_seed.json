@@ -1,0 +1,366 @@
+[
+  {
+    "id": "exact-fact-go-string",
+    "category": "exact_fact",
+    "tags": ["fact", "definition", "short"],
+    "query": "что такое строка в go",
+    "expected_document_ids": ["doc-go-strings"]
+  },
+  {
+    "id": "exact-fact-oauth-expiry",
+    "category": "exact_fact",
+    "tags": ["fact", "date", "number", "auth"],
+    "query": "срок жизни access token",
+    "expected_document_ids": ["doc-auth-policy"]
+  },
+  {
+    "id": "exact-fact-owner-role",
+    "category": "exact_fact",
+    "tags": ["fact", "name", "acl"],
+    "query": "какая роль может загружать документы",
+    "expected_document_ids": ["doc-rbac-guide"]
+  },
+  {
+    "id": "exact-fact-mfa-required",
+    "category": "exact_fact",
+    "tags": ["fact", "security", "policy"],
+    "query": "mfa обязательна для enterprise tenants",
+    "expected_document_ids": ["doc-security-policy"]
+  },
+  {
+    "id": "exact-fact-refresh-ttl",
+    "category": "exact_fact",
+    "tags": ["fact", "auth", "number"],
+    "query": "сколько живет refresh token",
+    "expected_document_ids": ["doc-session-auth"]
+  },
+  {
+    "id": "exact-fact-auth-header",
+    "category": "exact_fact",
+    "tags": ["fact", "auth", "api"],
+    "query": "в каком заголовке передается access token",
+    "expected_document_ids": ["doc-api-auth"]
+  },
+  {
+    "id": "exact-fact-ready-status",
+    "category": "exact_fact",
+    "tags": ["fact", "documents", "status"],
+    "query": "какой статус у документа после индексации",
+    "expected_document_ids": ["doc-document-lifecycle"]
+  },
+  {
+    "id": "exact-fact-opensearch-port",
+    "category": "exact_fact",
+    "tags": ["fact", "infra", "number"],
+    "query": "на каком порту opensearch",
+    "expected_document_ids": ["doc-local-stack"]
+  },
+  {
+    "id": "exact-fact-reranker-model",
+    "category": "exact_fact",
+    "tags": ["fact", "reranker", "model"],
+    "query": "какая модель используется для reranker",
+    "expected_document_ids": ["doc-retrieval-v2"]
+  },
+  {
+    "id": "exact-fact-document-sections-table",
+    "category": "exact_fact",
+    "tags": ["fact", "schema", "chunking"],
+    "query": "как называется таблица parent sections",
+    "expected_document_ids": ["doc-parent-child-schema"]
+  },
+  {
+    "id": "exact-fact-unstrict-role",
+    "category": "exact_fact",
+    "tags": ["fact", "acl", "mode"],
+    "query": "какое permission нужно для unstrict",
+    "expected_document_ids": ["doc-rbac-guide"]
+  },
+  {
+    "id": "exact-fact-kb-version",
+    "category": "exact_fact",
+    "tags": ["fact", "retrieval", "cache"],
+    "query": "что увеличивается после reingest для cache invalidation",
+    "expected_document_ids": ["doc-kb-versioning"]
+  },
+  {
+    "id": "ambiguous-sso",
+    "category": "ambiguous",
+    "tags": ["short", "ambiguous", "auth"],
+    "query": "sso",
+    "expected_document_ids": ["doc-sso-overview"]
+  },
+  {
+    "id": "ambiguous-passwords",
+    "category": "ambiguous",
+    "tags": ["short", "policy", "security"],
+    "query": "пароли в чат",
+    "expected_document_ids": ["doc-security-policy"]
+  },
+  {
+    "id": "short-context-refresh",
+    "category": "ambiguous",
+    "tags": ["short", "auth"],
+    "query": "refresh token",
+    "expected_document_ids": ["doc-auth-policy"]
+  },
+  {
+    "id": "ambiguous-oauth",
+    "category": "ambiguous",
+    "tags": ["short", "auth"],
+    "query": "oauth",
+    "expected_document_ids": ["doc-oauth-overview"]
+  },
+  {
+    "id": "ambiguous-mfa",
+    "category": "ambiguous",
+    "tags": ["short", "security"],
+    "query": "mfa",
+    "expected_document_ids": ["doc-security-policy"]
+  },
+  {
+    "id": "ambiguous-rbac",
+    "category": "ambiguous",
+    "tags": ["short", "acl"],
+    "query": "rbac",
+    "expected_document_ids": ["doc-rbac-guide"]
+  },
+  {
+    "id": "ambiguous-audit-log",
+    "category": "ambiguous",
+    "tags": ["short", "audit"],
+    "query": "audit log",
+    "expected_document_ids": ["doc-audit-policy"]
+  },
+  {
+    "id": "ambiguous-retention",
+    "category": "ambiguous",
+    "tags": ["short", "policy", "date"],
+    "query": "retention",
+    "expected_document_ids": ["doc-retention-policy"]
+  },
+  {
+    "id": "ambiguous-citations",
+    "category": "ambiguous",
+    "tags": ["short", "strict", "citations"],
+    "query": "citations",
+    "expected_document_ids": ["doc-strict-answering"]
+  },
+  {
+    "id": "ambiguous-reranker",
+    "category": "ambiguous",
+    "tags": ["short", "retrieval", "reranker"],
+    "query": "reranker",
+    "expected_document_ids": ["doc-retrieval-v2"]
+  },
+  {
+    "id": "ambiguous-sections",
+    "category": "ambiguous",
+    "tags": ["short", "chunking"],
+    "query": "sections",
+    "expected_document_ids": ["doc-parent-child-schema"]
+  },
+  {
+    "id": "ambiguous-rate-limit",
+    "category": "ambiguous",
+    "tags": ["short", "api", "infra"],
+    "query": "rate limit",
+    "expected_document_ids": ["doc-api-operations"]
+  },
+  {
+    "id": "comparison-oauth-sso",
+    "category": "comparison",
+    "tags": ["comparison", "multi_hop", "auth"],
+    "query": "сравни oauth и sso",
+    "expected_document_ids": ["doc-oauth-overview", "doc-sso-overview"]
+  },
+  {
+    "id": "comparison-rbac-abac",
+    "category": "comparison",
+    "tags": ["comparison", "multi_hop", "acl"],
+    "query": "разница между rbac и abac",
+    "expected_document_ids": ["doc-rbac-guide", "doc-abac-guide"]
+  },
+  {
+    "id": "comparison-access-refresh-token",
+    "category": "comparison",
+    "tags": ["comparison", "auth", "multi_hop"],
+    "query": "чем access token отличается от refresh token",
+    "expected_document_ids": ["doc-auth-policy", "doc-session-auth"]
+  },
+  {
+    "id": "comparison-strict-unstrict",
+    "category": "comparison",
+    "tags": ["comparison", "modes"],
+    "query": "сравни strict и unstrict режимы",
+    "expected_document_ids": ["doc-strict-answering", "doc-unstrict-mode"]
+  },
+  {
+    "id": "comparison-openai-gemini",
+    "category": "comparison",
+    "tags": ["comparison", "providers"],
+    "query": "разница между openai и gemini провайдерами",
+    "expected_document_ids": ["doc-openai-provider", "doc-gemini-provider"]
+  },
+  {
+    "id": "comparison-parent-child-late",
+    "category": "comparison",
+    "tags": ["comparison", "chunking", "multi_hop"],
+    "query": "чем parent child chunking отличается от late chunking",
+    "expected_document_ids": ["doc-parent-child-schema", "doc-late-chunking-notes"]
+  },
+  {
+    "id": "comparison-vector-bm25",
+    "category": "comparison",
+    "tags": ["comparison", "retrieval", "multi_hop"],
+    "query": "сравни vector search и bm25",
+    "expected_document_ids": ["doc-dense-retrieval", "doc-sparse-retrieval"]
+  },
+  {
+    "id": "comparison-owner-member",
+    "category": "comparison",
+    "tags": ["comparison", "acl"],
+    "query": "разница между owner и member ролями",
+    "expected_document_ids": ["doc-rbac-guide", "doc-owner-bootstrap"]
+  },
+  {
+    "id": "comparison-pgvector-opensearch",
+    "category": "comparison",
+    "tags": ["comparison", "infra", "retrieval"],
+    "query": "чем pgvector отличается от opensearch в retrieval pipeline",
+    "expected_document_ids": ["doc-dense-retrieval", "doc-sparse-retrieval"]
+  },
+  {
+    "id": "comparison-rerank-fusion",
+    "category": "comparison",
+    "tags": ["comparison", "retrieval"],
+    "query": "разница между rrf fusion и reranker",
+    "expected_document_ids": ["doc-retrieval-v2", "doc-reranker-design"]
+  },
+  {
+    "id": "comparison-citation-parent-child",
+    "category": "comparison",
+    "tags": ["comparison", "citations", "chunking"],
+    "query": "как citation span связан с parent child chunking",
+    "expected_document_ids": ["doc-parent-child-schema", "doc-strict-answering"]
+  },
+  {
+    "id": "comparison-cache-kb-version",
+    "category": "comparison",
+    "tags": ["comparison", "cache", "retrieval"],
+    "query": "как связаны cache invalidation и kb version",
+    "expected_document_ids": ["doc-kb-versioning", "doc-cache-design"]
+  },
+  {
+    "id": "procedure-enable-mfa",
+    "category": "procedure",
+    "tags": ["procedure", "security"],
+    "query": "как включить mfa",
+    "expected_document_ids": ["doc-security-policy"]
+  },
+  {
+    "id": "procedure-configure-sso",
+    "category": "procedure",
+    "tags": ["procedure", "sso"],
+    "query": "как настроить sso",
+    "expected_document_ids": ["doc-sso-setup"]
+  },
+  {
+    "id": "procedure-rotate-refresh-token",
+    "category": "procedure",
+    "tags": ["procedure", "auth"],
+    "query": "как ротировать refresh token",
+    "expected_document_ids": ["doc-session-auth"]
+  },
+  {
+    "id": "procedure-upload-document",
+    "category": "procedure",
+    "tags": ["procedure", "documents"],
+    "query": "как загрузить документ в knowledge base",
+    "expected_document_ids": ["doc-document-ingest"]
+  },
+  {
+    "id": "procedure-reingest-all",
+    "category": "procedure",
+    "tags": ["procedure", "documents", "ops"],
+    "query": "как перезапустить reingest для всех документов",
+    "expected_document_ids": ["doc-document-ingest"]
+  },
+  {
+    "id": "procedure-configure-reranker",
+    "category": "procedure",
+    "tags": ["procedure", "retrieval", "reranker"],
+    "query": "как настроить reranker sidecar",
+    "expected_document_ids": ["doc-reranker-design"]
+  },
+  {
+    "id": "procedure-set-default-mode",
+    "category": "procedure",
+    "tags": ["procedure", "modes", "ui"],
+    "query": "как сменить default mode пользователя",
+    "expected_document_ids": ["doc-user-settings"]
+  },
+  {
+    "id": "procedure-grant-restricted-access",
+    "category": "procedure",
+    "tags": ["procedure", "acl"],
+    "query": "как выдать доступ к документу только одной роли",
+    "expected_document_ids": ["doc-rbac-guide"]
+  },
+  {
+    "id": "policy-share-secrets",
+    "category": "policy",
+    "tags": ["policy", "security"],
+    "query": "можно ли отправлять секреты в чат",
+    "expected_document_ids": ["doc-security-policy"]
+  },
+  {
+    "id": "policy-private-docs",
+    "category": "policy",
+    "tags": ["policy", "acl"],
+    "query": "кто видит приватные документы",
+    "expected_document_ids": ["doc-rbac-guide"]
+  },
+  {
+    "id": "policy-web-search-unstrict",
+    "category": "policy",
+    "tags": ["policy", "web", "modes"],
+    "query": "когда разрешен web search в unstrict",
+    "expected_document_ids": ["doc-unstrict-mode"]
+  },
+  {
+    "id": "policy-owner-bootstrap",
+    "category": "policy",
+    "tags": ["policy", "auth", "acl"],
+    "query": "кто может создать первую организацию и owner аккаунт",
+    "expected_document_ids": ["doc-owner-bootstrap"]
+  },
+  {
+    "id": "policy-member-upload",
+    "category": "policy",
+    "tags": ["policy", "acl", "documents"],
+    "query": "может ли member загружать документы",
+    "expected_document_ids": ["doc-rbac-guide"]
+  },
+  {
+    "id": "policy-password-storage",
+    "category": "policy",
+    "tags": ["policy", "security", "auth"],
+    "query": "можно ли хранить пароли в открытом виде",
+    "expected_document_ids": ["doc-security-policy"]
+  },
+  {
+    "id": "policy-external-search-sources",
+    "category": "policy",
+    "tags": ["policy", "web", "trust"],
+    "query": "является ли web context внутренним источником компании",
+    "expected_document_ids": ["doc-unstrict-mode"]
+  },
+  {
+    "id": "policy-say-dont-know",
+    "category": "policy",
+    "tags": ["policy", "strict", "trust"],
+    "query": "когда система должна ответить что не знает",
+    "expected_document_ids": ["doc-strict-answering"]
+  }
+]

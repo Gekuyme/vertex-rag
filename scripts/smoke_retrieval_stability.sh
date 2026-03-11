@@ -4,6 +4,10 @@ set -euo pipefail
 
 API_BASE_URL="${API_BASE_URL:-http://localhost:8080}"
 PASSWORD="${SMOKE_PASSWORD:-Password123!}"
+LLM_RPM_LIMIT="${LLM_RPM_LIMIT:-0}"
+REQUEST_DELAY_SECONDS="${REQUEST_DELAY_SECONDS:-0}"
+LOW_QUOTA_MODE="${LOW_QUOTA_MODE:-false}"
+STABILITY_REPEATS="${STABILITY_REPEATS:-3}"
 
 require_bin() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -14,6 +18,15 @@ require_bin() {
 
 require_bin curl
 require_bin jq
+
+if [[ "$LOW_QUOTA_MODE" == "true" ]]; then
+  if [[ "$STABILITY_REPEATS" == "3" ]]; then
+    STABILITY_REPEATS=2
+  fi
+  if [[ "$LLM_RPM_LIMIT" == "0" ]]; then
+    LLM_RPM_LIMIT=10
+  fi
+fi
 
 timestamp="$(date +%s)"
 email="retrieval_smoke_${timestamp}@example.com"
@@ -28,6 +41,29 @@ cleanup() {
   rm -f "$document_file" "$restricted_file" "$common_term_file"
 }
 trap cleanup EXIT
+
+apply_rate_limit() {
+  local delay="$REQUEST_DELAY_SECONDS"
+  if [[ "$LLM_RPM_LIMIT" =~ ^[0-9]+$ ]] && [[ "$LLM_RPM_LIMIT" -gt 0 ]]; then
+    delay="$(python3 - "$LLM_RPM_LIMIT" <<'PY'
+import sys
+rpm = int(sys.argv[1])
+print(f"{60.0 / rpm:.2f}")
+PY
+)"
+  fi
+  if [[ "$delay" != "0" && "$delay" != "0.0" && "$delay" != "0.00" ]]; then
+    sleep "$delay"
+  fi
+}
+
+debug_chunk_ids() {
+  local query="$1"
+  curl -fsS -X POST "${API_BASE_URL}/admin/retrieval/debug" \
+    -H "Authorization: Bearer ${token}" \
+    -H "Content-Type: application/json" \
+    -d "{\"query\":\"${query}\",\"top_k\":8,\"candidate_k\":32}" | jq -r '.citations[0:3] | map(.chunk_id) | join(",")'
+}
 
 echo "==> Register owner"
 register_response="$(curl -fsS -X POST "${API_BASE_URL}/auth/register_owner" \
@@ -135,29 +171,33 @@ wait_document_ready "$common_term_document_id"
 wait_document_ready "$restricted_document_id"
 
 echo "==> Validate retrieval stability"
-ids_1="$(curl -fsS -X POST "${API_BASE_URL}/admin/retrieval/debug" \
-  -H "Authorization: Bearer ${token}" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\":\"${stable_token}\",\"top_k\":8,\"candidate_k\":32}" | jq -r '.citations[0:3] | map(.chunk_id) | join(",")')"
-ids_2="$(curl -fsS -X POST "${API_BASE_URL}/admin/retrieval/debug" \
-  -H "Authorization: Bearer ${token}" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\":\"${stable_token}\",\"top_k\":8,\"candidate_k\":32}" | jq -r '.citations[0:3] | map(.chunk_id) | join(",")')"
-ids_3="$(curl -fsS -X POST "${API_BASE_URL}/admin/retrieval/debug" \
-  -H "Authorization: Bearer ${token}" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\":\"${stable_token}\",\"top_k\":8,\"candidate_k\":32}" | jq -r '.citations[0:3] | map(.chunk_id) | join(",")')"
+ids_1="$(debug_chunk_ids "$stable_token")"
+ids_2=""
+ids_3=""
+if [[ "$STABILITY_REPEATS" -ge 2 ]]; then
+  apply_rate_limit
+  ids_2="$(debug_chunk_ids "$stable_token")"
+fi
+if [[ "$STABILITY_REPEATS" -ge 3 ]]; then
+  apply_rate_limit
+  ids_3="$(debug_chunk_ids "$stable_token")"
+fi
 
 if [[ -z "$ids_1" || "$ids_1" == "null" ]]; then
   echo "retrieval returned empty chunk ids" >&2
   exit 1
 fi
-if [[ "$ids_1" != "$ids_2" || "$ids_1" != "$ids_3" ]]; then
+if [[ -n "$ids_2" && "$ids_1" != "$ids_2" ]]; then
+  echo "retrieval top chunks are unstable: ${ids_1} | ${ids_2}" >&2
+  exit 1
+fi
+if [[ -n "$ids_3" && "$ids_1" != "$ids_3" ]]; then
   echo "retrieval top chunks are unstable: ${ids_1} | ${ids_2} | ${ids_3}" >&2
   exit 1
 fi
 
 echo "==> Validate common-term retrieval"
+apply_rate_limit
 common_term_debug="$(curl -fsS -X POST "${API_BASE_URL}/admin/retrieval/debug" \
   -H "Authorization: Bearer ${token}" \
   -H "Content-Type: application/json" \
@@ -196,6 +236,7 @@ ask_citations_len() {
 
 echo "==> Validate unstrict RBAC (before role switch)"
 chat_before="$(create_chat)"
+apply_rate_limit
 response_before="$(ask_citations_len "$chat_before" "$restricted_token")"
 citations_before="$(printf '%s' "$response_before" | jq -r '.citations | length')"
 restricted_before_count="$(printf '%s' "$response_before" | jq -r --arg restricted_doc_id "$restricted_document_id" '[.citations[] | select(.document_id == $restricted_doc_id)] | length')"
@@ -212,6 +253,7 @@ curl -fsS -X PATCH "${API_BASE_URL}/admin/users/${user_id}/role" \
 
 echo "==> Validate unstrict RBAC (after role switch)"
 chat_after="$(create_chat)"
+apply_rate_limit
 response_after="$(ask_citations_len "$chat_after" "$restricted_token")"
 citations_after="$(printf '%s' "$response_after" | jq -r '.citations | length')"
 restricted_after_count="$(printf '%s' "$response_after" | jq -r --arg restricted_doc_id "$restricted_document_id" '[.citations[] | select(.document_id == $restricted_doc_id)] | length')"
@@ -226,4 +268,4 @@ curl -fsS -X PATCH "${API_BASE_URL}/admin/users/${user_id}/role" \
   -H "Content-Type: application/json" \
   -d "{\"role_id\":${owner_role_id}}" >/dev/null
 
-echo "Retrieval stability smoke passed: ids=${ids_1}; common-term hits=${common_term_hits}; intent=${common_term_intent}; kind=${common_term_kind}; unstrict total citations before=${citations_before}, after=${citations_after}, restricted before=${restricted_before_count}, restricted after=${restricted_after_count}"
+echo "Retrieval stability smoke passed: ids=${ids_1}; repeats=${STABILITY_REPEATS}; common-term hits=${common_term_hits}; intent=${common_term_intent}; kind=${common_term_kind}; unstrict total citations before=${citations_before}, after=${citations_after}, restricted before=${restricted_before_count}, restricted after=${restricted_after_count}"

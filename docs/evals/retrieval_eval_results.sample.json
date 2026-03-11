@@ -1,0 +1,26 @@
+{
+  "exact-fact-go-string": {
+    "citations": [
+      {
+        "chunk_id": "chunk-go-strings-1",
+        "document_id": "doc-go-strings"
+      },
+      {
+        "chunk_id": "chunk-go-memory-1",
+        "document_id": "doc-go-memory"
+      }
+    ]
+  },
+  "comparison-oauth-sso": {
+    "citations": [
+      {
+        "chunk_id": "chunk-oauth-1",
+        "document_id": "doc-oauth-overview"
+      },
+      {
+        "chunk_id": "chunk-sso-1",
+        "document_id": "doc-sso-overview"
+      }
+    ]
+  }
+}
